@@ -5,14 +5,17 @@ import typer
 
 from . import __version__
 from .core import load_default_taxonomy
+from .ingest.erp import ADAPTERS, ingest_tb
 from .store import init_db, session_scope
 from .store.models import Engagement, FsLine, NoteItem, TbLine
 
 app = typer.Typer(help="AuditIQ Core — ingestion, reconciliation and review.", no_args_is_help=True)
 taxonomy_app = typer.Typer(help="Inspect the Schedule III FSLI taxonomy.", no_args_is_help=True)
 store_app = typer.Typer(help="Manage the AuditIQ database.", no_args_is_help=True)
+ingest_app = typer.Typer(help="Ingest source data (trial balances, statements).", no_args_is_help=True)
 app.add_typer(taxonomy_app, name="taxonomy")
 app.add_typer(store_app, name="store")
+app.add_typer(ingest_app, name="ingest")
 
 # Accept short codes as well as the full statement names used in the schema.
 _STATEMENT_ALIASES = {
@@ -83,6 +86,53 @@ def store_status() -> None:
         }
     for name, count in counts.items():
         typer.echo(f"  {name:<14} {count}")
+
+
+@ingest_app.command("tb")
+def ingest_tb_command(
+    path: str = typer.Argument(..., help="Path to the trial-balance export (.xlsx or .csv)."),
+    client: str = typer.Option(..., "--client", "-c", help="Client code, e.g. T00."),
+    period: str = typer.Option(..., "--period", "-p", help="Financial year, e.g. FY25-26."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+    source: str = typer.Option(
+        None,
+        "--source",
+        "-s",
+        help=f"ERP layout (default: auto-detect). One of: {', '.join(sorted(ADAPTERS))}.",
+    ),
+    name: str = typer.Option("", "--name", "-n", help="Client name (optional)."),
+    unit: str = typer.Option(
+        "absolute", "--unit", help="Reporting unit of the amounts: absolute, lakhs, crores, millions."
+    ),
+) -> None:
+    """Ingest an ERP trial-balance export into the store."""
+    try:
+        result = ingest_tb(
+            path,
+            client_code=client,
+            period=period,
+            basis=basis,
+            source=source,
+            client_name=name,
+            unit=unit,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"source        {result.source}")
+    typer.echo(f"engagement    #{result.engagement_id}  {result.client_code} {result.period} ({result.basis})")
+    typer.echo(f"document      #{result.document_id}")
+    typer.echo(f"lines         {result.lines} (duplicates skipped: {result.duplicates_skipped})")
+    typer.echo(f"total debit   {result.total_debit:,.2f}")
+    typer.echo(f"total credit  {result.total_credit:,.2f}")
+    if result.balanced:
+        typer.secho(f"balanced      yes (diff {result.balance_difference:,.2f})", fg=typer.colors.GREEN)
+    else:
+        typer.secho(
+            f"balanced      NO (diff {result.balance_difference:,.2f})",
+            fg=typer.colors.YELLOW,
+        )
 
 
 if __name__ == "__main__":

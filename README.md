@@ -45,11 +45,24 @@ pip install -e ".[dev]"
 auditiq --help
 ```
 
-## CLI (P0)
+> If `python -m venv` fails with *"ensurepip is not available"* (some minimal
+> Linux/WSL images), install the venv package (`apt install python3-venv`) or
+> bootstrap pip with `curl -sSL https://bootstrap.pypa.io/get-pip.py | python3 -`.
+
+## CLI
 
 ```bash
 auditiq version
 auditiq store init
 auditiq store status
 auditiq taxonomy show --statement BS
+auditiq taxonomy show --search borrowings
+
+# Ingest an ERP trial balance (layout auto-detected: tally | sap | zoho | generic)
+auditiq ingest tb path/to/tb.xlsx --client T00 --period FY25-26 --name "Test Co"
+auditiq ingest tb path/to/tb.xlsx --client T00 --period FY25-26 --source sap --unit crores
 ```
+
+Ingestion is idempotent: re-ingesting the same file for the same engagement
+replaces its prior lines (matched by content hash). Each run reports total debit
+vs total credit so an out-of-balance trial balance is flagged immediately.
