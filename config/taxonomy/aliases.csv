@@ -1,0 +1,126 @@
+alias,fsli_code
+sundry debtors,AST_TR
+debtors,AST_TR
+trade debtors,AST_TR
+trade receivables,AST_TR
+accounts receivable,AST_TR
+receivables,AST_TR
+bills receivable,AST_TR
+sundry creditors,LIA_TP
+creditors,LIA_TP
+trade creditors,LIA_TP
+trade payables,LIA_TP
+accounts payable,LIA_TP
+bills payable,LIA_TP
+cash in hand,AST_CASH
+petty cash,AST_CASH
+cash,AST_CASH
+cash and bank balances,AST_CASH
+cash and cash equivalents,AST_CASH
+stock in hand,AST_INV
+closing stock,AST_INV
+inventory,AST_INV
+inventories,AST_INV
+stock in trade,AST_INV
+finished goods,AST_INV
+raw materials stock,AST_INV
+share capital,EQ_SC
+equity share capital,EQ_SC
+capital account,EQ_SC
+preference share capital,EQ_SC
+reserves and surplus,EQ_RS
+retained earnings,EQ_RS
+general reserve,EQ_RS
+securities premium,EQ_RS
+capital reserve,EQ_RS
+term loan,LIA_LTB
+long term borrowings,LIA_LTB
+debentures,LIA_LTB
+unsecured loans,LIA_LTB
+vehicle loan,LIA_LTB
+cash credit,LIA_STB
+bank overdraft,LIA_STB
+short term borrowings,LIA_STB
+working capital loan,LIA_STB
+gst payable,LIA_OCL
+tds payable,LIA_OCL
+pf payable,LIA_OCL
+esi payable,LIA_OCL
+salary payable,LIA_OCL
+outstanding expenses,LIA_OCL
+expenses payable,LIA_OCL
+unearned revenue,LIA_OCL
+provision for income tax,LIA_STP
+provision for taxation,LIA_STP
+provision for bonus,LIA_STP
+proposed dividend,LIA_STP
+deferred tax liability,LIA_DTL
+deferred tax asset,AST_DTA
+plant and machinery,AST_PPE
+furniture and fixtures,AST_PPE
+land,AST_PPE
+buildings,AST_PPE
+office equipment,AST_PPE
+computers,AST_PPE
+motor vehicles,AST_PPE
+fixed assets,AST_PPE
+accumulated depreciation,AST_PPE
+goodwill,AST_INTG
+computer software,AST_INTG
+capital work in progress,AST_CWIP
+intangible assets under development,AST_IAUD
+long term investments,AST_NCI
+current investments,AST_CI
+advances to suppliers,AST_STLA
+staff advances,AST_STLA
+gst input credit,AST_OCA
+tds receivable,AST_OCA
+prepaid expenses,AST_OCA
+input tax credit,AST_OCA
+advance tax,AST_OCA
+sales,INC_REV_SALES
+sales accounts,INC_REV_SALES
+revenue from operations,INC_REV_SALES
+sale of products,INC_REV_SALES
+service income,INC_REV_SERV
+scrap sales,INC_REV_OTH
+duty drawback,INC_REV_OTH
+interest income,INC_OTH
+interest received,INC_OTH
+dividend income,INC_OTH
+other income,INC_OTH
+discount received,INC_OTH
+rent received,INC_OTH
+purchases,EXP_PUR
+purchase accounts,EXP_PUR
+raw materials consumed,EXP_MAT
+freight inward,EXP_MAT
+opening stock,EXP_INVCH
+changes in inventories,EXP_INVCH
+salaries,EXP_EMP
+salary and wages,EXP_EMP
+wages,EXP_EMP
+staff welfare,EXP_EMP
+bonus,EXP_EMP
+salaries and employee wages,EXP_EMP
+interest on term loan,EXP_FIN
+interest on loan,EXP_FIN
+interest paid,EXP_FIN
+interest expense,EXP_FIN
+depreciation,EXP_DEP
+amortisation,EXP_DEP
+electricity charges,EXP_OTH
+power and fuel,EXP_OTH
+repairs and maintenance,EXP_OTH
+insurance,EXP_OTH
+audit fees,EXP_OTH
+professional fees,EXP_OTH
+telephone expenses,EXP_OTH
+miscellaneous expenses,EXP_OTH
+office expenses,EXP_OTH
+printing and stationery,EXP_OTH
+travelling expenses,EXP_OTH
+exceptional items,EXP_EXC
+income tax expense,EXP_TAXC
+current tax,EXP_TAXC
+deferred tax expense,EXP_TAXD

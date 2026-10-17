@@ -1,0 +1,50 @@
+# ==========================================
+# Legacy reference implementations (their own git repos; NOT part of AuditIQ core)
+# ==========================================
+/AuditIQ/
+/Financial_Report_Analysis_Agent/
+
+# ==========================================
+# Local run data (SQLite db, uploads, generated fixtures)
+# ==========================================
+/data/
+
+# ==========================================
+# Secrets
+# ==========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+ENV/
+*.egg
+
+# ==========================================
+# Tooling / editors / OS
+# ==========================================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+
+# Scratch notes
+TODO
