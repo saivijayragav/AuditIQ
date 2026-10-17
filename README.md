@@ -66,3 +66,39 @@ auditiq ingest tb path/to/tb.xlsx --client T00 --period FY25-26 --source sap --u
 Ingestion is idempotent: re-ingesting the same file for the same engagement
 replaces its prior lines (matched by content hash). Each run reports total debit
 vs total credit so an out-of-balance trial balance is flagged immediately.
+
+## FSLI mapping
+
+Every ledger head is mapped to a Schedule III FSLI through a five-layer cascade
+that degrades gracefully and never needs the network:
+
+```
+cache  ->  alias dictionary  ->  embedding gate  ->  constrained LLM  ->  review queue
+```
+
+* **cache** — heads already resolved for this engagement (reviewer decisions feed back).
+* **alias dictionary** — `config/taxonomy/aliases.csv` (deterministic).
+* **embedding gate** — auto-accepts the top FSLI only when similarity `>= tau_e`
+  *and* the top-1 vs top-2 margin `>= delta`.
+* **constrained LLM** — optional, **off by default**; only ever returns a code from
+  the candidate shortlist or `UNKNOWN`.
+* **review queue** — everything else is written as `pending_review` for a human.
+
+```bash
+# Map an engagement (dictionary + embedding; encoder auto-detected)
+auditiq map --client T00 --period FY25-26
+
+# Force a specific encoder, or dictionary-only
+auditiq map --client T00 --period FY25-26 --encoder tfidf
+auditiq map --client T00 --period FY25-26 --encoder none
+
+# Enable the optional LLM layer (needs GOOGLE_API_KEY and the [llm] extra)
+auditiq map --client T00 --period FY25-26 --llm
+
+# Tune the gates on a labelled dev set -> data/thresholds/<client>.json (re-runnable per client)
+auditiq tune path/to/labelled.csv --split dev --client T00
+```
+
+Results land in the `tb_mapping` table (`fsli_code`, `method`, `confidence`,
+`status`). The embedding gate needs the `[mapping]` extra (`pip install -e ".[mapping]"`);
+without it the cascade runs dictionary-only.

@@ -48,3 +48,8 @@ Thumbs.db
 
 # Scratch notes
 TODO
+
+# Mapping artefacts written at the repo root (LLM response cache, tuned thresholds)
+llm_cache.json
+thresholds.json
+*.db

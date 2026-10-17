@@ -6,6 +6,13 @@ import typer
 from . import __version__
 from .core import load_default_taxonomy
 from .ingest.erp import ADAPTERS, ingest_tb
+from .ingest.prepare import (
+    default_encoder_kind,
+    load_labelled_csv,
+    map_engagement,
+    save_thresholds,
+    tune_thresholds,
+)
 from .store import init_db, session_scope
 from .store.models import Engagement, FsLine, NoteItem, TbLine
 
@@ -133,6 +140,113 @@ def ingest_tb_command(
             f"balanced      NO (diff {result.balance_difference:,.2f})",
             fg=typer.colors.YELLOW,
         )
+
+
+def _resolve_engagement_id(engagement, client, period, basis) -> int:
+    if engagement is not None:
+        return engagement
+    if not (client and period):
+        typer.secho(
+            "error: provide --engagement, or both --client and --period",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    with session_scope() as session:
+        row = session.query(Engagement).filter_by(
+            client_code=client, period=period, basis=basis
+        ).one_or_none()
+        if row is None:
+            typer.secho(
+                f"error: no engagement for {client} {period} ({basis})",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        return row.id
+
+
+@app.command("map")
+def map_command(
+    engagement: int = typer.Option(None, "--engagement", "-e", help="Engagement id."),
+    client: str = typer.Option(None, "--client", "-c", help="Client code (with --period)."),
+    period: str = typer.Option(None, "--period", "-p", help="Financial year (with --client)."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+    encoder: str = typer.Option(
+        None, "--encoder", help="tfidf | sbert | none (default: auto-detect)."
+    ),
+    use_llm: bool = typer.Option(
+        False, "--llm", help="Enable the constrained LLM layer (off by default)."
+    ),
+    llm_cache: str = typer.Option("llm_cache.json", "--llm-cache", help="LLM response cache path."),
+) -> None:
+    """Map an engagement's trial-balance lines to Schedule III FSLIs."""
+    engagement_id = _resolve_engagement_id(engagement, client, period, basis)
+    try:
+        summary = map_engagement(
+            engagement_id,
+            client=client,
+            encoder_kind=encoder,
+            use_llm=use_llm,
+            llm_cache=llm_cache,
+        )
+    except (RuntimeError, ValueError) as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"engagement    #{summary.engagement_id}")
+    typer.echo(f"encoder       {summary.encoder}{'' if summary.tuned else '  (untuned defaults)'}")
+    typer.echo(f"lines         {summary.lines}")
+    typer.echo(f"resolved      {summary.resolved} ({summary.resolution_rate:.1%})")
+    typer.echo(f"review        {summary.review}")
+    for layer, count in sorted(summary.by_layer.items()):
+        typer.echo(f"  by {layer:<6} {count}")
+    if use_llm:
+        typer.echo(f"llm calls     {summary.llm_calls}")
+
+
+@app.command("tune")
+def tune_command(
+    gold: str = typer.Argument(..., help="Labelled CSV with raw_name, group, gold columns."),
+    client: str = typer.Option(None, "--client", "-c", help="Save as thresholds/<client>.json."),
+    encoder: str = typer.Option(None, "--encoder", help="tfidf | sbert (default: auto-detect)."),
+    out: str = typer.Option(None, "--out", help="Explicit thresholds output path."),
+    split: str = typer.Option(
+        "dev", "--split", help="Keep rows with this split value (blank = all rows)."
+    ),
+    dict_mode: str = typer.Option("full", "--dict-mode", help="full | heldout."),
+    k: int = typer.Option(5, "--k", help="Shortlist size."),
+    use_llm: bool = typer.Option(False, "--llm", help="Tune the LLM gate too (needs an API key)."),
+) -> None:
+    """Tune cascade thresholds on a labelled dev set and save them."""
+    import json
+
+    dev = load_labelled_csv(gold, split=split or None)
+    if not dev:
+        typer.secho("error: no labelled heads loaded", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    llm = None
+    if use_llm:
+        from .ingest.prepare import LLM
+
+        llm = LLM(cache_path="llm_cache.json")
+
+    kind = encoder or default_encoder_kind()
+    if kind == "none":
+        typer.secho("warning: no encoder available; tuning the embedding gate is skipped", fg=typer.colors.YELLOW)
+
+    thresholds, report = tune_thresholds(
+        dev, encoder_kind=kind, llm=llm, k=k, dict_mode=dict_mode
+    )
+    if llm is not None:
+        llm.flush()
+
+    path = save_thresholds(thresholds, client=client, path=out)
+    typer.echo(f"tuned {len(dev)} heads ({kind}, dict_mode={dict_mode})")
+    typer.echo(f"  tau_e={thresholds.tau_e}  delta={thresholds.delta}  tau_l={thresholds.tau_l}  k={thresholds.k}")
+    typer.echo(f"saved {path}")
+    typer.echo(json.dumps(report, indent=2, default=str))
 
 
 if __name__ == "__main__":

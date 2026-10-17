@@ -15,6 +15,7 @@ from .models import (
     TbLine,
     TbMapping,
 )
+from .sync import sync_taxonomy
 
 __all__ = [
     "Base",
@@ -31,4 +32,5 @@ __all__ = [
     "get_engine",
     "init_db",
     "session_scope",
+    "sync_taxonomy",
 ]
