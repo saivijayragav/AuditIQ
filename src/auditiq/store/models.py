@@ -133,6 +133,9 @@ class FsLine(Base):
     fsli_code: Mapped[Optional[str]] = mapped_column(
         ForeignKey("fsli.code"), nullable=True, index=True
     )
+    group_code: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
+    )  # presentation group (config, not an FK); set when the face line aggregates
     statement: Mapped[str] = mapped_column(String(16), default="")
     category: Mapped[str] = mapped_column(String(64), default="")
     measure: Mapped[str] = mapped_column(String(50), default="reported_amount")  # face|subtotal|note_total
@@ -247,6 +250,63 @@ class ExceptionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class ReconRun(Base):
+    """One reconciliation of an engagement's trial balance against its draft FS.
+
+    Side A is the mapped trial balance; Side B is the client's draft financial
+    statements. The run records the materiality config that produced it so a
+    result is reproducible and explainable.
+    """
+
+    __tablename__ = "recon_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    engagement_id: Mapped[int] = mapped_column(
+        ForeignKey("engagement.id"), index=True
+    )
+    period: Mapped[str] = mapped_column(String(20), default="")
+    basis: Mapped[str] = mapped_column(String(20), default="")
+    unit: Mapped[str] = mapped_column(String(20), default="absolute")
+    statements: Mapped[str] = mapped_column(String(40), default="BS,P&L")
+    rounding_decimals: Mapped[int] = mapped_column(Integer, default=2)
+    materiality: Mapped[float] = mapped_column(Float, default=0.0)
+    performance_materiality: Mapped[float] = mapped_column(Float, default=0.0)
+    materiality_basis: Mapped[str] = mapped_column(String(100), default="")
+    units_total: Mapped[int] = mapped_column(Integer, default=0)
+    tied: Mapped[int] = mapped_column(Integer, default=0)
+    rounding: Mapped[int] = mapped_column(Integer, default=0)
+    minor: Mapped[int] = mapped_column(Integer, default=0)
+    watch: Mapped[int] = mapped_column(Integer, default=0)
+    material: Mapped[int] = mapped_column(Integer, default=0)
+    exposure_a: Mapped[float] = mapped_column(Float, default=0.0)
+    exposure_b: Mapped[float] = mapped_column(Float, default=0.0)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ReconLine(Base):
+    """One reconciliation unit (an FSLI or a presentation group) in a run."""
+
+    __tablename__ = "recon_line"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("recon_run.id"), index=True)
+    unit_code: Mapped[str] = mapped_column(String(32), index=True)
+    is_group: Mapped[bool] = mapped_column(Boolean, default=False)
+    statement: Mapped[str] = mapped_column(String(16), default="")
+    name: Mapped[str] = mapped_column(String(200), default="")
+    side_a: Mapped[float] = mapped_column(Float, default=0.0)
+    side_b: Mapped[float] = mapped_column(Float, default=0.0)
+    variance: Mapped[float] = mapped_column(Float, default=0.0)
+    variance_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    a_lines: Mapped[int] = mapped_column(Integer, default=0)
+    b_rows: Mapped[int] = mapped_column(Integer, default=0)
+    classification: Mapped[str] = mapped_column(String(20), default="tied")
+    severity: Mapped[str] = mapped_column(String(20), default="none")
+    refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    attribution_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
 __all__ = [
     "Base",
     "DocumentTable",
@@ -257,6 +317,8 @@ __all__ = [
     "FsLine",
     "FsliRef",
     "NoteItem",
+    "ReconLine",
+    "ReconRun",
     "SourceDocument",
     "TbLine",
     "TbMapping",

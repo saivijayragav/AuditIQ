@@ -1,0 +1,4 @@
+group_code,group_name,statement,fsli_code
+REV_OPERATIONS,Revenue from Operations,Statement of Profit and Loss,INC_REV_SALES
+REV_OPERATIONS,Revenue from Operations,Statement of Profit and Loss,INC_REV_SERV
+REV_OPERATIONS,Revenue from Operations,Statement of Profit and Loss,INC_REV_OTH

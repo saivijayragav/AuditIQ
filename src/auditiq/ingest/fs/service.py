@@ -17,6 +17,7 @@ from typing import Optional, Sequence
 
 from sqlalchemy import delete, select
 
+from ...core.groups import load_default_groups
 from ...core.periods import normalize_fy, prior_fy
 from ...core.taxonomy import load_default_taxonomy
 from ...store import init_db, session_scope
@@ -52,7 +53,7 @@ class FsIngestResult:
     pages: int
     rows: int                 # labelled face rows
     lines: int                # persisted fs_line values (current + prior)
-    mapped: int               # persisted values resolved to an FSLI
+    mapped: int               # persisted values resolved to an FSLI or a group
     unmapped: int             # persisted values left for review
     subtotals: int            # persisted values that are subtotals
     by_statement: dict[str, int] = field(default_factory=dict)
@@ -176,10 +177,11 @@ def ingest_fs(
     issues = validate_document(document, normalized_period, resolved_unit, statements)
 
     taxonomy = load_default_taxonomy()
+    groups = load_default_groups(taxonomy=taxonomy)
     mapper, _thresholds, resolved_encoder, tuned = build_fs_mapper(
         taxonomy=taxonomy, client=client_code, encoder_kind=encoder_kind
     )
-    labelled = label_rows(statements, mapper, client=client_code, layers=layers)
+    labelled = label_rows(statements, mapper, client=client_code, layers=layers, groups=groups)
     summary = summarise(labelled, resolved_encoder, tuned)
 
     digest = file_hash(path)
@@ -236,6 +238,10 @@ def ingest_fs(
             fsli = taxonomy.get(item.fsli_code)
             if fsli is not None:
                 category = fsli.category
+            else:
+                group = groups.get(item.group_code)
+                if group is not None:
+                    category = group.category
 
             bound_values = bind_row(
                 item.row,
@@ -262,6 +268,7 @@ def ingest_fs(
                         document_id=document_row.id,
                         engagement_id=engagement.id,
                         fsli_code=bound.fsli_code,
+                        group_code=item.group_code,
                         statement=bound.statement,
                         category=category,
                         measure=bound.measure,
@@ -281,7 +288,7 @@ def ingest_fs(
                 )
                 by_statement[statement_label] += 1
                 line_count += 1
-                if bound.fsli_code:
+                if bound.fsli_code or item.group_code:
                     mapped += 1
                 if bound.is_subtotal:
                     subtotals += 1

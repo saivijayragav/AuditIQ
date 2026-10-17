@@ -34,6 +34,17 @@ FSLI_SCHEMA_PATH: Path = Path(
 ALIASES_PATH: Path = Path(os.getenv("AUDITIQ_ALIASES", str(TAXONOMY_DIR / "aliases.csv")))
 SEEDS_PATH: Path = Path(os.getenv("AUDITIQ_SEEDS", str(TAXONOMY_DIR / "seeds.csv")))
 
+# Reconciliation group layer: presentation aggregates that span several FSLIs
+# (e.g. "Revenue from Operations" = the three revenue FSLIs presented as one face
+# line). Membership lives in ``fsli_groups.csv``; presentation labels in
+# ``group_aliases.csv``.
+FSLI_GROUPS_PATH: Path = Path(
+    os.getenv("AUDITIQ_FSLI_GROUPS", str(TAXONOMY_DIR / "fsli_groups.csv"))
+)
+GROUP_ALIASES_PATH: Path = Path(
+    os.getenv("AUDITIQ_GROUP_ALIASES", str(TAXONOMY_DIR / "group_aliases.csv"))
+)
+
 # Database (SQLite by default; swap the URL for Postgres later).
 DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'auditiq.db'}")
 

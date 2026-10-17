@@ -11,7 +11,9 @@ from .enums import (
     Statement,
 )
 from .periods import fy_start_year, normalize_fy, prior_fy
-from .taxonomy import Fsli, Taxonomy, load_default_taxonomy
+from .groups import FsliGroup, GroupIndex, load_default_groups
+from .taxonomy import Fsli, Taxonomy, load_default_taxonomy, statement_code
+from .text import clean, nu
 from .units import (
     CRORE,
     detect_unit,
@@ -25,6 +27,8 @@ __all__ = [
     "CRORE",
     "DocumentKind",
     "Fsli",
+    "FsliGroup",
+    "GroupIndex",
     "MappingMethod",
     "MappingStatus",
     "NoteCategory",
@@ -32,13 +36,17 @@ __all__ = [
     "SourceSystem",
     "Statement",
     "Taxonomy",
+    "clean",
     "detect_unit",
     "fy_start_year",
+    "load_default_groups",
     "load_default_taxonomy",
     "normalize_fy",
     "normalize_unit",
+    "nu",
     "parse_amount",
     "prior_fy",
+    "statement_code",
     "to_absolute",
     "to_crores",
 ]

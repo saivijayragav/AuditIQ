@@ -27,9 +27,11 @@ from .base import (
     FsTable,
 )
 from .labels import (
+    GROUP_LAYER,
     LabelSummary,
     LabelledRow,
     build_fs_mapper,
+    build_group_index,
     label_row,
     label_rows,
     summarise,
@@ -49,6 +51,7 @@ from .statements import (
 from .validation import ValidationIssue, validate_document
 
 __all__ = [
+    "GROUP_LAYER",
     "MEASURE_FACE",
     "MEASURE_NOTE_TOTAL",
     "MEASURE_SUBTOTAL",
@@ -72,6 +75,7 @@ __all__ = [
     "ValidationIssue",
     "bind_row",
     "build_fs_mapper",
+    "build_group_index",
     "classify_page",
     "detect_reader",
     "extract_statements",

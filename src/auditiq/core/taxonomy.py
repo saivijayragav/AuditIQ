@@ -13,6 +13,32 @@ from typing import Iterator, Optional
 
 from ..settings import FSLI_SCHEMA_PATH
 
+# Long statement name (as used in the schema) -> short code (as used in the store
+# and by ``core.enums.Statement``).
+STATEMENT_CODES: dict[str, str] = {
+    "balance sheet": "BS",
+    "statement of profit and loss": "P&L",
+    "profit and loss": "P&L",
+    "cash flow": "CF",
+    "cash flow statement": "CF",
+    "statement of cash flows": "CF",
+    "equity": "Equity",
+    "notes": "Notes",
+}
+
+
+def statement_code(statement: object) -> str:
+    """Short statement code (``BS`` / ``P&L`` / ...) for a long statement name."""
+    text = str(statement or "").strip().lower()
+    if not text:
+        return ""
+    if text in STATEMENT_CODES:
+        return STATEMENT_CODES[text]
+    for needle, code in STATEMENT_CODES.items():
+        if needle in text:
+            return code
+    return str(statement).strip()
+
 
 @dataclass(frozen=True)
 class Fsli:

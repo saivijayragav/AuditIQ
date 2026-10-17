@@ -3,9 +3,9 @@
 Deterministic ingestion, reconciliation and review of Indian statutory audit data
 (Ind AS / Schedule III of the Companies Act, 2013).
 
-> Status: **P1c** — ERP ingestion, the FSLI mapping cascade and modular
-> financial-statement ingestion are in place. Reconciliation and review are being
-> added phase by phase (see the plan).
+> Status: **P2** — ERP ingestion, the FSLI mapping cascade, modular
+> financial-statement ingestion and reconciliation are in place. Financial
+> statement review is being added phase by phase (see the plan).
 
 ## What this repository does
 
@@ -24,11 +24,12 @@ Analyzing a *published* annual report is a separate, opt-in feature.
 ## Layout
 
 ```
-config/taxonomy/        Committed reference assets (FSLI schema, aliases, seeds)
-src/auditiq/core/       Taxonomy, units, periods, enums
+config/taxonomy/        Committed reference assets (FSLI schema, aliases, seeds, groups)
+src/auditiq/core/       Taxonomy, units, periods, enums, presentation groups
 src/auditiq/store/      SQLAlchemy schema + session helpers
 src/auditiq/ingest/     ERP + financial-statement ingestion and preparation
-src/auditiq/...         recon / review (added in later phases)
+src/auditiq/reconciliation/  Side A / Side B tie-out, materiality gates, attribution
+src/auditiq/...         review (added in a later phase)
 data/                   Local run data (gitignored)
 tests/                  Test suite
 ```
@@ -121,9 +122,45 @@ FS presentation labels are mapped to FSLIs by the **same five-layer cascade** as
 ledger heads; `config/taxonomy/aliases.csv` carries the stable Schedule III
 vocabulary and the embedding gate covers the rest.
 
+A face line that **aggregates** several FSLIs (today *Revenue from Operations* on
+a Division I face) is resolved to a **presentation group** before the cascade, so
+it is tied out as one unit instead of being forced onto an arbitrary member.
+Groups are committed config: `config/taxonomy/fsli_groups.csv` (membership, must
+be disjoint) and `config/taxonomy/group_aliases.csv` (labels).
+
 ```bash
 auditiq ingest fs path/to/draft_fs.pdf --client T00 --period FY25-26 [--unit lakhs]
 auditiq fs coverage path/to/draft_fs.pdf --client T00    # mapped vs unmapped labels
+```
+
+## Reconciliation
+
+Side A is the mapped trial balance; Side B is the client's draft financial
+statements. Reconciliation covers the balance sheet and statement of profit and
+loss (the taxonomy defines no cash-flow or equity FSLIs). Both sides are brought
+into presentation space using each FSLI's normal balance, then joined over recon
+units (FSLIs and presentation groups) so `only_a` / `only_b` are first-class.
+
+Two gates, deliberately separate:
+
+* **Rounding** — the only ignorable difference, derived from the reporting unit
+  and the number of decimals presented (`crores` to 2 dp → ₹50,000 tolerance).
+* **Materiality** — never accepts a difference, only grades severity
+  (`≥ M` material, `PM ≤ |·| < M` watch). Materiality must be set; there is no
+  silent fallback.
+
+Reconciliation consumes the **persisted** mappings (`auditiq map` must have run)
+and reports unmapped/pending heads as *exposure*, never summing them into the
+books. Material variances escalate to the exception queue; differences are
+attributed deterministically (unmapped exposure, mirror-pair reclass, current-year
+result, residual).
+
+```bash
+auditiq materiality suggest --client T00 --period FY25-26      # 0.5% of revenue, for review
+auditiq materiality set --client T00 --period FY25-26 --value 1000000 --basis-name "0.5% of revenue"
+auditiq recon run   --client T00 --period FY25-26 [--materiality 1000000] [--pm 0.75] [--statement BS]
+auditiq recon show  --client T00 --period FY25-26 [--severity material]
+auditiq recon explain AST_TR --client T00 --period FY25-26
 ```
 
 ```bash
