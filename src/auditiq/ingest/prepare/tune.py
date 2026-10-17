@@ -146,9 +146,15 @@ def tune_thresholds(
         tau_e, delta = Thresholds().tau_e, Thresholds().delta
     else:
         best, stats = _embedding_stage(mapper, alias, dev, target_ap_emb, k)
-        tau_e, delta = round(float(best[1]), 3), float(best[2])
+        if best is None:
+            # Every dev head resolved in the dictionary layer, so there is nothing
+            # for the embedding gate to tune; keep the untuned defaults.
+            stats = {**stats, "skipped": "all dev heads resolved by the dictionary"}
+            tau_e, delta = Thresholds().tau_e, Thresholds().delta
+        else:
+            tau_e, delta = round(float(best[1]), 3), float(best[2])
+        stats = {**stats, "tau_e": tau_e, "delta": delta}
         report["embedding"] = stats
-        report["embedding"].update(tau_e=tau_e, delta=delta)
 
     tau_l = 0.8
     if llm is not None and encoder is not None:

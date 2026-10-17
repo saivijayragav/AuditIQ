@@ -5,6 +5,7 @@ from .db import get_engine, init_db, session_scope
 from .models import (
     Base,
     DocumentTable,
+    DocumentTableRow,
     Engagement,
     Evidence,
     ExceptionRecord,
@@ -20,6 +21,7 @@ from .sync import sync_taxonomy
 __all__ = [
     "Base",
     "DocumentTable",
+    "DocumentTableRow",
     "Engagement",
     "Evidence",
     "ExceptionRecord",

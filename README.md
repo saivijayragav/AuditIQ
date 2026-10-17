@@ -3,8 +3,8 @@
 Deterministic ingestion, reconciliation and review of Indian statutory audit data
 (Ind AS / Schedule III of the Companies Act, 2013).
 
-> Status: **P0 scaffold** — repository, core primitives and store are in place.
-> ERP trial-balance ingestion, FSLI mapping, reconciliation and review are being
+> Status: **P1c** — ERP ingestion, the FSLI mapping cascade and modular
+> financial-statement ingestion are in place. Reconciliation and review are being
 > added phase by phase (see the plan).
 
 ## What this repository does
@@ -102,3 +102,32 @@ auditiq tune path/to/labelled.csv --split dev --client T00
 Results land in the `tb_mapping` table (`fsli_code`, `method`, `confidence`,
 `status`). The embedding gate needs the `[mapping]` extra (`pip install -e ".[mapping]"`);
 without it the cascade runs dictionary-only.
+
+## Financial-statement ingestion (reconciliation Side B)
+
+The client's **draft financial statements** are the default other side of
+reconciliation. Ingestion is modular: document-type readers implement a stable
+`FsReader` interface and produce a reader-neutral document; segmentation, FSLI
+labelling, unit/period normalisation, validation and persistence are shared. PDF
+is the reader shipped today; Excel/CSV/HTML/DOCX slot in behind the same
+interface. PDF support needs the `[report]` extra (`pip install -e ".[report]"`).
+
+Every reported figure is converted to **absolute rupees** and bound to a financial
+year (current column → engagement period, prior column → preceding year), and each
+persisted `fs_line` carries an evidence pointer. Face **subtotal** rows are marked
+(`measure = subtotal`) and excluded from the tie-out.
+
+FS presentation labels are mapped to FSLIs by the **same five-layer cascade** as
+ledger heads; `config/taxonomy/aliases.csv` carries the stable Schedule III
+vocabulary and the embedding gate covers the rest.
+
+```bash
+auditiq ingest fs path/to/draft_fs.pdf --client T00 --period FY25-26 [--unit lakhs]
+auditiq fs coverage path/to/draft_fs.pdf --client T00    # mapped vs unmapped labels
+```
+
+```bash
+# Read the real published ITC report as an extraction sanity check
+pip install -e ".[report]"
+auditiq fs coverage Financial_Report_Analysis_Agent/itc-r-and-a-consolidated-fin-statements-2026.pdf
+```

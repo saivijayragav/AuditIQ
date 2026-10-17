@@ -6,6 +6,14 @@ import typer
 from . import __version__
 from .core import load_default_taxonomy
 from .ingest.erp import ADAPTERS, ingest_tb
+from .ingest.fs import (
+    build_fs_mapper,
+    extract_statements,
+    ingest_fs,
+    label_rows,
+    read_fs,
+    summarise,
+)
 from .ingest.prepare import (
     default_encoder_kind,
     load_labelled_csv,
@@ -20,9 +28,11 @@ app = typer.Typer(help="AuditIQ Core — ingestion, reconciliation and review.",
 taxonomy_app = typer.Typer(help="Inspect the Schedule III FSLI taxonomy.", no_args_is_help=True)
 store_app = typer.Typer(help="Manage the AuditIQ database.", no_args_is_help=True)
 ingest_app = typer.Typer(help="Ingest source data (trial balances, statements).", no_args_is_help=True)
+fs_app = typer.Typer(help="Financial-statement ingestion and coverage.", no_args_is_help=True)
 app.add_typer(taxonomy_app, name="taxonomy")
 app.add_typer(store_app, name="store")
 app.add_typer(ingest_app, name="ingest")
+app.add_typer(fs_app, name="fs")
 
 # Accept short codes as well as the full statement names used in the schema.
 _STATEMENT_ALIASES = {
@@ -140,6 +150,106 @@ def ingest_tb_command(
             f"balanced      NO (diff {result.balance_difference:,.2f})",
             fg=typer.colors.YELLOW,
         )
+
+
+@ingest_app.command("fs")
+def ingest_fs_command(
+    path: str = typer.Argument(..., help="Path to the draft financial statements (PDF)."),
+    client: str = typer.Option(..., "--client", "-c", help="Client code, e.g. T00."),
+    period: str = typer.Option(..., "--period", "-p", help="Financial year, e.g. FY25-26."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+    kind: str = typer.Option(
+        None, "--kind", "-k", help="Reader kind (default: auto-detect from the file suffix)."
+    ),
+    name: str = typer.Option("", "--name", "-n", help="Client name (optional)."),
+    unit: str = typer.Option(
+        None, "--unit", help="Override the reporting unit: absolute, lakhs, crores, millions."
+    ),
+    encoder: str = typer.Option(
+        None, "--encoder", help="tfidf | sbert | none (default: auto-detect)."
+    ),
+) -> None:
+    """Ingest a draft financial statement (reconciliation Side B)."""
+    try:
+        result = ingest_fs(
+            path,
+            client_code=client,
+            period=period,
+            basis=basis,
+            kind=kind,
+            client_name=name,
+            unit=unit,
+            encoder_kind=encoder,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"reader        {result.reader}")
+    typer.echo(f"company       {result.company or '(not detected)'}")
+    typer.echo(
+        f"engagement    #{result.engagement_id}  {client} {result.period} ({result.basis})"
+    )
+    typer.echo(
+        f"period        {result.period} (prior {result.prior_period or 'n/a'})  unit {result.unit}"
+    )
+    typer.echo(f"document      #{result.document_id}  pages {result.pages}  tables {result.tables}")
+    typer.echo(f"rows          {result.rows}  lines {result.lines}")
+    typer.echo(
+        f"mapped        {result.mapped}/{result.lines} "
+        f"({result.mapped / result.lines:.1%})" if result.lines else "mapped        0"
+    )
+    typer.echo(f"subtotals     {result.subtotals} (excluded from tie-out)")
+    for statement, count in sorted(result.by_statement.items()):
+        typer.echo(f"  {statement:<10} {count}")
+    typer.echo(f"encoder       {result.encoder}{'' if result.tuned else '  (untuned defaults)'}")
+    for issue in result.issues:
+        colour = {
+            "error": typer.colors.RED,
+            "warning": typer.colors.YELLOW,
+        }.get(issue.severity, typer.colors.CYAN)
+        typer.secho(f"  {issue.severity:<7} {issue.code}: {issue.message}", fg=colour)
+
+
+@fs_app.command("coverage")
+def fs_coverage_command(
+    path: str = typer.Argument(..., help="Path to the financial statement (PDF)."),
+    kind: str = typer.Option(None, "--kind", "-k", help="Reader kind (default: auto-detect)."),
+    client: str = typer.Option(None, "--client", "-c", help="Client code (for tuned thresholds)."),
+    encoder: str = typer.Option(
+        None, "--encoder", help="tfidf | sbert | none (default: auto-detect)."
+    ),
+) -> None:
+    """Report FS-label -> FSLI coverage for a document (no persistence)."""
+    try:
+        document = read_fs(path, kind)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    statements = extract_statements(document)
+    if not statements:
+        typer.secho("error: no statement detected in document", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    mapper, _thresholds, encoder_kind, tuned = build_fs_mapper(
+        client=client, encoder_kind=encoder
+    )
+    labelled = label_rows(statements, mapper, client=client or "")
+    summary = summarise(labelled, encoder_kind, tuned)
+
+    typer.echo(f"document      {path}")
+    typer.echo(f"encoder       {summary.encoder}{'' if summary.tuned else '  (untuned defaults)'}")
+    typer.echo(f"rows          {summary.rows}")
+    typer.echo(f"coverage      {summary.mapped}/{summary.rows} ({summary.coverage:.1%})")
+    for layer, count in sorted(summary.by_layer.items()):
+        typer.echo(f"  by {layer:<6} {count}")
+
+    unmapped = [item for item in labelled if not item.mapped]
+    if unmapped:
+        typer.echo("unmapped:")
+        for item in unmapped:
+            typer.echo(f"  [{item.statement}] {item.row.label}")
 
 
 def _resolve_engagement_id(engagement, client, period, basis) -> int:

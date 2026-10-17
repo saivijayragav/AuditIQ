@@ -135,10 +135,19 @@ class FsLine(Base):
     )
     statement: Mapped[str] = mapped_column(String(16), default="")
     category: Mapped[str] = mapped_column(String(64), default="")
-    measure: Mapped[str] = mapped_column(String(50), default="reported_amount")
+    measure: Mapped[str] = mapped_column(String(50), default="reported_amount")  # face|subtotal|note_total
     report_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     unit: Mapped[str] = mapped_column(String(20), default="absolute")
     normalized_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    period: Mapped[str] = mapped_column(String(20), default="", index=True)  # FY this figure belongs to
+    column_label: Mapped[str] = mapped_column(String(50), default="")  # raw column header
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_subtotal: Mapped[bool] = mapped_column(Boolean, default=False)
+    value_text: Mapped[str] = mapped_column(Text, default="")
+    cell_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    evidence_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("evidence.id"), nullable=True, index=True
+    )
     source_page: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source_ref: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
@@ -153,12 +162,18 @@ class NoteItem(Base):
     engagement_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("engagement.id"), nullable=True, index=True
     )
+    fsli_code: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("fsli.code"), nullable=True, index=True
+    )
     note_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     category: Mapped[str] = mapped_column(String(50), default="")  # NoteCategory
     item: Mapped[str] = mapped_column(String(300), default="")
     measure: Mapped[str] = mapped_column(String(50), default="reported_amount")
     value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     unit: Mapped[str] = mapped_column(String(20), default="absolute")
+    period: Mapped[str] = mapped_column(String(20), default="")
+    is_subtotal: Mapped[bool] = mapped_column(Boolean, default=False)
+    value_text: Mapped[str] = mapped_column(Text, default="")
     counterparty: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     relationship: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     transaction_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -167,14 +182,14 @@ class NoteItem(Base):
 
 
 class DocumentTable(Base):
-    """Registry of dynamically-created SQL tables extracted from a document."""
+    """Registry of a table extracted from a document (statement or note)."""
 
     __tablename__ = "document_table"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     table_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("source_document.id"), index=True)
-    sql_table_name: Mapped[str] = mapped_column(String(120), unique=True)
+    sql_table_name: Mapped[str] = mapped_column(String(120), default="")
     title: Mapped[str] = mapped_column(String(300), default="")
     note_number: Mapped[str] = mapped_column(String(20), default="")
     section: Mapped[str] = mapped_column(String(100), default="")
@@ -183,6 +198,21 @@ class DocumentTable(Base):
     column_types_json: Mapped[str] = mapped_column(Text, default="[]")
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     col_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DocumentTableRow(Base):
+    """A generic JSON row belonging to a :class:`DocumentTable`.
+
+    Replaces the FRA runtime ``CREATE TABLE`` per extracted table: one portable
+    table, no DDL at runtime.
+    """
+
+    __tablename__ = "document_table_row"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    table_id: Mapped[str] = mapped_column(String(64), index=True)
+    row_index: Mapped[int] = mapped_column(Integer, default=0)
+    cells_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class Evidence(Base):
@@ -220,6 +250,7 @@ class ExceptionRecord(Base):
 __all__ = [
     "Base",
     "DocumentTable",
+    "DocumentTableRow",
     "Engagement",
     "Evidence",
     "ExceptionRecord",

@@ -124,3 +124,38 @@ exceptional items,EXP_EXC
 income tax expense,EXP_TAXC
 current tax,EXP_TAXC
 deferred tax expense,EXP_TAXD
+deferred tax,EXP_TAXD
+property plant and equipment,AST_PPE
+property plant and equipment net,AST_PPE
+tangible assets,AST_PPE
+tangible fixed assets,AST_PPE
+intangible assets,AST_INTG
+intangible assets net,AST_INTG
+non current investments,AST_NCI
+deferred tax assets,AST_DTA
+deferred tax assets net,AST_DTA
+long term loans and advances,AST_LTLA
+other non current assets,AST_ONCA
+short term loans and advances,AST_STLA
+other current assets,AST_OCA
+other current liabilities,LIA_OCL
+other equity,EQ_RS
+deferred tax liabilities,LIA_DTL
+deferred tax liabilities net,LIA_DTL
+other long term liabilities,LIA_OLTL
+long term provisions,LIA_LTP
+short term provisions,LIA_STP
+cost of materials consumed,EXP_MAT
+purchases of stock in trade,EXP_PUR
+employee benefit expense,EXP_EMP
+employee benefits expense,EXP_EMP
+finance cost,EXP_FIN
+finance costs,EXP_FIN
+depreciation and amortisation expense,EXP_DEP
+depreciation and amortization expense,EXP_DEP
+other expense,EXP_OTH
+other expenses,EXP_OTH
+revenue from sale of products,INC_REV_SALES
+revenue from sale of goods,INC_REV_SALES
+revenue from sale of services,INC_REV_SERV
+other operating revenue,INC_REV_OTH
