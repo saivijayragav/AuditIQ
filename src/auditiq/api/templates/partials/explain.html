@@ -1,0 +1,28 @@
+<h5>{{ line.unit_code }} — {{ line.name }}{% if line.is_group %} <span class="chip">group</span>{% endif %}</h5>
+<table>
+  <tbody>
+    <tr><td>statement</td><td>{{ line.statement or '—' }}</td></tr>
+    <tr><td>books (A)</td><td class="num">{{ line.side_a | money }} <span class="muted">({{ line.a_lines }} lines)</span></td></tr>
+    <tr><td>statements (B)</td><td class="num">{{ line.side_b | money }} <span class="muted">({{ line.b_rows }} rows)</span></td></tr>
+    <tr><td>variance</td><td class="num"><strong class="severity-{{ line.severity }}">{{ line.variance | money }}
+      {{ ('%.1f%%' | format(line.variance_pct)) if line.variance_pct is not none else '—' }}
+      · {{ line.classification }} / {{ line.severity }}</strong></td></tr>
+    {% set attribution = line.attribution or {} %}
+    <tr><td>attributed</td><td class="num">{{ attribution.get('explained') | money }} · residual {{ attribution.get('residual') | money }}</td></tr>
+  </tbody>
+</table>
+
+{% set candidates = attribution.get('candidates') or [] %}
+{% if candidates %}
+<p class="muted">probable causes:</p>
+<ul>
+  {% for c in candidates %}
+  <li><span class="chip">{{ c.get('kind', '?') }}</span> {{ c.get('amount') | money }} — {{ c.get('detail', '') }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% set members = (line.refs or {}).get('members') or [] %}
+{% if members %}
+<p class="muted">group members: {{ members | join(', ') }}</p>
+{% endif %}

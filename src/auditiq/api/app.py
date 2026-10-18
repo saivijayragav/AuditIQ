@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -431,19 +432,51 @@ def reference_router() -> APIRouter:
     return router
 
 
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+
+def _money(value):
+    if value is None:
+        return "-"
+    return f"{float(value):,.2f}"
+
+
+def _absmoney(value):
+    if value is None:
+        return "-"
+    return f"{abs(float(value)):,.2f}"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AuditIQ Core",
         version=__version__,
         description="Trial-balance ingestion, FS reconciliation and review — deterministic by default.",
     )
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.get("/")
+    def root():
+        return {"service": "auditiq", "version": __version__, "docs": "/docs", "ui": "/ui", "api": "/api/health"}
+
+    # JSON API
     app.include_router(engagements_router())
     app.include_router(review_router())
     app.include_router(reference_router())
 
-    @app.get("/")
-    def root():
-        return {"service": "auditiq", "version": __version__, "docs": "/docs", "api": "/api/health"}
+    # Server-rendered harness (needs jinja2, part of the [web] extra)
+    try:
+        from fastapi.templating import Jinja2Templates
+
+        from .ui import ui_router
+
+        templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+        templates.env.filters["money"] = _money
+        templates.env.filters["absmoney"] = _absmoney
+        app.include_router(ui_router(templates))
+    except ImportError:  # pragma: no cover - json-only install
+        pass
 
     return app
 

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Engagements — AuditIQ{% endblock %}
+{% block content %}
+<hgroup>
+  <h2>Engagements</h2>
+  <p>AuditIQ workspace — trial balance in, reconciliation out.</p>
+</hgroup>
+
+{% if error %}<p class="alert">{{ error }}</p>{% endif %}
+
+<form method="post" action="/ui">
+  <div class="grid">
+    <input name="client_code" placeholder="Client code (e.g. T00)" required>
+    <input name="period" placeholder="FY25-26" required>
+    <input name="client_name" placeholder="Client name (optional)">
+    <select name="basis">
+      <option>Standalone</option>
+      <option>Consolidated</option>
+    </select>
+    <button type="submit">Create / open</button>
+  </div>
+</form>
+
+{% if engagements %}
+<table>
+  <thead>
+    <tr>
+      <th>Client</th><th>Period</th><th>Basis</th>
+      <th class="num">TB lines</th>
+      <th class="num">Accepted</th>
+      <th class="num">Pending</th>
+      <th class="num">FS docs</th>
+      <th class="num">FS unmapped</th>
+      <th>Recon</th>
+      <th class="num">Open exc.</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in engagements %}
+    <tr>
+      <td><strong>{{ e.client_code }}</strong><br><small>{{ e.client_name }}</small></td>
+      <td>{{ e.period }}</td>
+      <td>{{ e.basis }}</td>
+      <td class="num">{{ e.tb_lines }}</td>
+      <td class="num">{{ e.resolved_lines }}</td>
+      <td class="num">{{ e.pending_lines }}</td>
+      <td class="num">{{ e.fs_documents }}</td>
+      <td class="num">{{ e.fs_unmapped_rows }}</td>
+      <td class="muted">{% if e.recon_run_id %}run #{{ e.recon_run_id }} · {{ e.recon_status }}{% else %}—{% endif %}</td>
+      <td class="num">{{ e.open_exceptions }}</td>
+      <td><span class="chip">{{ e.intake_status }}</span></td>
+      <td><a href="/ui/engagements/{{ e.engagement_id }}">open →</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No engagements yet — create one above.</p>
+{% endif %}
+{% endblock %}

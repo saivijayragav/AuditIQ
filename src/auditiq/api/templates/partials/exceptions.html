@@ -1,0 +1,41 @@
+{% if error %}<p class="alert">{{ error }}</p>{% endif %}
+
+<h4>Exceptions <small class="muted">{{ rows | length }}</small></h4>
+
+{% if rows %}
+<table>
+  <thead><tr><th>#</th><th>Kind</th><th>Severity</th><th>Status</th><th class="num">Amount</th><th>FSLI</th><th>Note</th><th>Disposition</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.exception_id }}</td>
+      <td><span class="chip">{{ r.kind }}</span></td>
+      <td class="severity-{{ r.severity }}">{{ r.severity }}</td>
+      <td>{{ r.status }}</td>
+      <td class="num">{{ r.amount | money }}</td>
+      <td class="muted">{{ r.fsli or '—' }}</td>
+      <td class="muted">{{ r.note }}</td>
+      <td>
+        {% if r.status == 'open' %}
+        <form hx-post="/ui/engagements/{{ e.engagement_id }}/exceptions/{{ r.exception_id }}/dispose" hx-target="#content" class="inl">
+          <input type="hidden" name="exception_id" value="{{ r.exception_id }}">
+          <select name="status">
+            <option value="explained">explained</option>
+            <option value="accepted">accepted</option>
+          </select>
+          <input name="note" placeholder="note" size="18">
+          <button type="submit">dispose</button>
+        </form>
+        {% elif r.status == 'explained' %}
+        <span class="chip">explained: {{ r.note }}</span>
+        {% else %}
+        <span class="chip">accepted: {{ r.note }}</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="ok">No exception records — nothing was escalated by the last run.</p>
+{% endif %}

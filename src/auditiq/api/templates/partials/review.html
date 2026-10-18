@@ -1,0 +1,80 @@
+{% if error %}<p class="alert">{{ error }}</p>{% endif %}
+
+<h4>Pending review <small class="muted">{{ pending | length }} head(s), largest exposure first</small></h4>
+
+{% if pending %}
+<form hx-post="/ui/engagements/{{ e.engagement_id }}/review/bulk" hx-target="#content" class="inl">
+  <input name="reviewer" placeholder="reviewer name" value="harness">
+  <button type="submit">Approve all with top candidate</button>
+</form>
+
+<table>
+  <thead>
+    <tr>
+      <th>Line</th><th>Ledger head</th><th class="num">Exposure</th><th class="num">Lines</th>
+      <th>Cascade</th><th>Candidate FSLIs — click to approve</th><th>Manual resolve</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for h in pending %}
+    <tr>
+      <td>{{ h.line_id }}</td>
+      <td>{{ h.raw_name }}{% if h.raw_code %} <small class="muted">({{ h.raw_code }})</small>{% endif %}</td>
+      <td class="num {{ 'severity-material' if h.abs_amount >= (e.materiality_value or 0) else '' }}">{{ h.amount | money }}</td>
+      <td class="num">{{ h.lines }}</td>
+      <td><span class="chip">{{ h.status }}</span>{% if h.method %} <small class="muted">{{ h.method }}</small>{% endif %}</td>
+      <td>
+        {% if h.candidates %}
+          {% for c in h.candidates %}
+          <button class="chip" title="approve {{ h.raw_name }} → {{ c }}"
+                  hx-post="/ui/engagements/{{ e.engagement_id }}/review/resolve"
+                  hx-vals='{"line_id": {{ h.line_id }}, "fsli": "{{ c }}", "reviewer": "harness"}'
+                  hx-target="#content">{{ c }}</button>
+          {% endfor %}
+          {% if h.embed_score is not none and h.embed_margin is not none %}
+          <div class="muted">score {{ h.embed_score | round(3) }} · margin {{ h.embed_margin | round(3) }}</div>
+          {% endif %}
+        {% else %}
+          <small class="muted">no candidate shortlist</small>
+        {% endif %}
+      </td>
+      <td>
+        <form hx-post="/ui/engagements/{{ e.engagement_id }}/review/resolve" hx-target="#content" class="inl">
+          <input type="hidden" name="line_id" value="{{ h.line_id }}">
+          <input type="hidden" name="reviewer" value="harness">
+          <input name="fsli" placeholder="FSLI" size="12" value="{{ h.candidates[0] if h.candidates else '' }}" required>
+          <button type="submit">resolve</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="ok">Nothing pending — every ledger head is accepted.</p>
+{% endif %}
+
+{% if resolved %}
+<details class="drawer">
+  <summary>Reviewer-resolved heads ({{ resolved | length }} shown, newest decisions first)</summary>
+  <table>
+    <thead><tr><th>Head</th><th class="num">Amount</th><th class="num">Lines</th><th>Resolved to</th><th></th></tr></thead>
+    <tbody>
+      {% for h in resolved %}
+      <tr>
+        <td>{{ h.raw_name }}</td>
+        <td class="num">{{ h.amount | money }}</td>
+        <td class="num">{{ h.lines }}</td>
+        <td><span class="chip">{{ h.candidates[0] }}</span></td>
+        <td>
+          <button class="chip" title="undo — back to the queue"
+                  hx-post="/ui/engagements/{{ e.engagement_id }}/review/reset"
+                  hx-vals='{"line_id": {{ h.line_id }}}'
+                  hx-target="#content">reset</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</details>
+{% endif %}
