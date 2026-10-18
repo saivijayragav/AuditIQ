@@ -3,9 +3,9 @@
 Deterministic ingestion, reconciliation and review of Indian statutory audit data
 (Ind AS / Schedule III of the Companies Act, 2013).
 
-> Status: **P2** — ERP ingestion, the FSLI mapping cascade, modular
-> financial-statement ingestion and reconciliation are in place. Financial
-> statement review is being added phase by phase (see the plan).
+> Status: **P3** — ERP ingestion, the FSLI mapping cascade (with a working
+> review queue), modular financial-statement ingestion, reconciliation and the
+> internal web harness are in place.
 
 ## What this repository does
 
@@ -26,10 +26,10 @@ Analyzing a *published* annual report is a separate, opt-in feature.
 ```
 config/taxonomy/        Committed reference assets (FSLI schema, aliases, seeds, groups)
 src/auditiq/core/       Taxonomy, units, periods, enums, presentation groups
-src/auditiq/store/      SQLAlchemy schema + session helpers
-src/auditiq/ingest/     ERP + financial-statement ingestion and preparation
+src/auditiq/store/      SQLAlchemy schema, sessions + engagement queries
+src/auditiq/ingest/     ERP + financial-statement ingestion, mapping cascade, review queue
 src/auditiq/reconciliation/  Side A / Side B tie-out, materiality gates, attribution
-src/auditiq/...         review (added in a later phase)
+src/auditiq/api/        JSON API + Jinja2/HTMX web harness (auditiq serve)
 data/                   Local run data (gitignored)
 tests/                  Test suite
 ```
@@ -42,7 +42,7 @@ reference implementations only and are gitignored.
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -e ".[dev,web]"      # + [mapping] for the embedding gate, [report] for PDFs
 auditiq --help
 ```
 
@@ -201,3 +201,31 @@ auditiq fs-review resolve 7 --fsli EXP_OTH                 # fix current + prior
 pip install -e ".[report]"
 auditiq fs coverage Financial_Report_Analysis_Agent/itc-r-and-a-consolidated-fin-statements-2026.pdf
 ```
+
+## Web harness (internal)
+
+The same workflow in a browser, for testing the pipeline end to end — not a
+product UI. It ships as HTMX-swapped server-rendered fragments over a
+**framework-agnostic JSON API** (a future SPA can consume the same endpoints),
+with HTMX and Pico.css vendored under `src/auditiq/api/static/vendor/` so it
+works offline with no build step and no node.
+
+```bash
+pip install -e ".[web]"
+auditiq serve                       # http://127.0.0.1:8765 (loopback only)
+auditiq serve --port 9000 --reload  # dev mode
+```
+
+* `http://127.0.0.1:8765/ui` — engagement list and the per-engagement workspace:
+  a stepper (TB → Mapped → Draft FS → Materiality → Recon → Exceptions) plus tabs
+  for **Ingest** (file upload or server-side path), **Map**, **Review queue**
+  (candidate chips approve in one click; bulk "approve all on top candidate";
+  reset to undo), **Materiality** (one-click suggestion), **Reconcile** (run +
+  results grid with a per-row explain drawer), **FS review** and **Exceptions**
+  (dispose inline). Errors re-render inside the fragment.
+* `/docs` — OpenAPI for the JSON API; routes never re-implement business rules,
+  they call the same services as the CLI.
+* JSON API base: `/api/...` — see the interactive docs for the full surface
+  (engagements, ingest, map, mappings/resolve[-bulk]/reset, fs-review,
+  materiality, recon run/latest/explain, exceptions, taxonomy, groups).
+
