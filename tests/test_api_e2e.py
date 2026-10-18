@@ -6,6 +6,8 @@ fs-review. Mirrors the CLI e2e gate at the API level; no browser, no node.
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -204,3 +206,27 @@ def test_api_engagement_404_and_bad_status(client_api):
 def test_api_mapped_exposure_lines(tmp_path, monkeypatch):
     """Side A: accepted books contain the mystery head only after approval."""
     pass
+
+
+def test_api_reports_schema_drift(tmp_path, monkeypatch):
+    """A stale database returns an actionable 500, not a bare OperationalError."""
+    url = f"sqlite:///{tmp_path / 'drift.db'}"
+    monkeypatch.setattr(db, "DATABASE_URL", url)
+    monkeypatch.setattr(db, "_engine", None)
+    monkeypatch.setattr(db, "_session_factory", None)
+    monkeypatch.setattr(db, "_schema_checked", set())
+    monkeypatch.setattr("auditiq.settings.DATABASE_URL", url)
+
+    # A database created before the P3.1 columns: fs_line without group_code.
+    with sqlite3.connect(tmp_path / "drift.db") as con:
+        con.execute("CREATE TABLE fs_line (id INTEGER PRIMARY KEY, fsli_code VARCHAR)")
+
+    client = TestClient(create_app())
+    response = client.get("/api/engagements")
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"] == "schema_drift"
+    assert "fs_line.group_code" in body["detail"]
+    assert "store reset" in body["fix"]
+

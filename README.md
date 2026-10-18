@@ -56,6 +56,8 @@ auditiq --help
 auditiq version
 auditiq store init
 auditiq store status
+# After a schema change: rebuild an empty local database (deletes local data)
+auditiq store reset --yes
 auditiq taxonomy show --statement BS
 auditiq taxonomy show --search borrowings
 

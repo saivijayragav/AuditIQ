@@ -12,7 +12,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException, UploadFile
+from fastapi import APIRouter, FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,7 @@ from ..reconciliation import (
     suggest_for_engagement,
 )
 from ..settings import UPLOAD_DIR, ensure_dirs
+from ..store import SchemaDriftError
 from ..store.queries import (
     create_engagement,
     dispose_exception,
@@ -455,6 +457,16 @@ def create_app() -> FastAPI:
         description="Trial-balance ingestion, FS reconciliation and review — deterministic by default.",
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    @app.exception_handler(SchemaDriftError)
+    async def _schema_drift(request: Request, exc: SchemaDriftError):
+        """Turn schema drift into an actionable message instead of a bare 500."""
+        fix = "Run 'auditiq store reset' to rebuild the local database."
+        if "text/html" in request.headers.get("accept", ""):
+            return PlainTextResponse(f"{exc}\n\n{fix}", status_code=500)
+        return JSONResponse(
+            {"error": "schema_drift", "detail": str(exc), "fix": fix}, status_code=500
+        )
 
     @app.get("/")
     def root():

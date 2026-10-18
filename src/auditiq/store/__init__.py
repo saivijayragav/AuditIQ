@@ -1,7 +1,7 @@
 """Store layer: ORM models and session helpers."""
 from __future__ import annotations
 
-from .db import get_engine, init_db, session_scope
+from .db import SchemaDriftError, check_schema, get_engine, init_db, reset_db, session_scope
 from .models import (
     Base,
     DocumentTable,
@@ -32,11 +32,14 @@ __all__ = [
     "NoteItem",
     "ReconLine",
     "ReconRun",
+    "SchemaDriftError",
     "SourceDocument",
     "TbLine",
     "TbMapping",
+    "check_schema",
     "get_engine",
     "init_db",
+    "reset_db",
     "session_scope",
     "sync_taxonomy",
 ]

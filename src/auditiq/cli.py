@@ -31,7 +31,7 @@ from .reconciliation import (
     set_materiality,
     suggest_for_engagement,
 )
-from .store import init_db, session_scope
+from .store import SchemaDriftError, init_db, reset_db, session_scope
 from .store.models import Engagement, FsLine, NoteItem, ReconLine, ReconRun, TbLine
 from .store.queries import dispose_exception, list_exceptions
 
@@ -107,8 +107,34 @@ def taxonomy_show(
 @store_app.command("init")
 def store_init() -> None:
     """Create the database and all tables (idempotent)."""
-    engine = init_db()
+    try:
+        engine = init_db()
+    except SchemaDriftError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"Initialised database: {engine.url}")
+
+
+@store_app.command("reset")
+def store_reset(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete the local database and rebuild an empty schema.
+
+    Removes every engagement, document and result. Uploaded source files in
+    ``data/uploads`` are left in place. Use this after a schema change: the
+    models gained columns, and ``store init`` cannot add them to an old file.
+    """
+    if not yes:
+        typer.confirm(
+            "This deletes the local AuditIQ database. Continue?", abort=True
+        )
+    try:
+        engine = reset_db()
+    except (SchemaDriftError, RuntimeError) as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Reset database: {engine.url}")
 
 
 @store_app.command("status")
