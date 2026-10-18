@@ -116,6 +116,10 @@ class TbMapping(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending_review")
     reviewer: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     resolved_fsli: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Cascade shortlist persisted for the review queue (JSON: codes + embed
+    # scores). Written by ``map_engagement`` when the embedding layer ran so the
+    # reviewer can pick a suggestion without re-encoding.
+    candidates_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -136,6 +140,9 @@ class FsLine(Base):
     group_code: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True, index=True
     )  # presentation group (config, not an FK); set when the face line aggregates
+    # How the label was resolved: the cascade layer (group|cache|dict|emb|llm),
+    # or ``manual`` after reviewer resolution. Empty on legacy rows.
+    method: Mapped[str] = mapped_column(String(20), default="")
     statement: Mapped[str] = mapped_column(String(16), default="")
     category: Mapped[str] = mapped_column(String(64), default="")
     measure: Mapped[str] = mapped_column(String(50), default="reported_amount")  # face|subtotal|note_total

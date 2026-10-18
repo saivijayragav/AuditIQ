@@ -38,7 +38,8 @@ from .labels import (
 )
 from .normalize import BoundValue, bind_row, resolve_unit
 from .registry import detect_reader, get_reader, read_fs, reader_kinds, readers
-from .service import FsIngestResult, file_hash, ingest_fs
+from .review import FsResolutionResult, UnmappedLabel, list_unmapped_fs, reset_fs_line, resolve_fs_line
+from .service import FsCoverageReport, FsIngestResult, file_hash, fs_coverage, ingest_fs
 from .statements import (
     classify_page,
     extract_statements,
@@ -63,15 +64,18 @@ __all__ = [
     "STATEMENT_NOTES",
     "STATEMENT_PL",
     "BoundValue",
+    "FsCoverageReport",
     "FsDocument",
     "FsIngestResult",
     "FsLocation",
     "FsPage",
     "FsReader",
+    "FsResolutionResult",
     "FsRow",
     "FsTable",
     "LabelSummary",
     "LabelledRow",
+    "UnmappedLabel",
     "ValidationIssue",
     "bind_row",
     "build_fs_mapper",
@@ -80,13 +84,17 @@ __all__ = [
     "detect_reader",
     "extract_statements",
     "file_hash",
+    "fs_coverage",
     "get_reader",
     "ingest_fs",
     "label_row",
     "label_rows",
+    "list_unmapped_fs",
     "read_fs",
     "reader_kinds",
     "readers",
+    "reset_fs_line",
+    "resolve_fs_line",
     "resolve_unit",
     "row_from_line",
     "rows_from_page",

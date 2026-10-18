@@ -269,6 +269,7 @@ def ingest_fs(
                         engagement_id=engagement.id,
                         fsli_code=bound.fsli_code,
                         group_code=item.group_code,
+                        method=item.layer,
                         statement=bound.statement,
                         category=category,
                         measure=bound.measure,
@@ -294,7 +295,6 @@ def ingest_fs(
                     subtotals += 1
 
         table_count = _persist_tables(session, document_row.id, digest, document)
-
         return FsIngestResult(
             engagement_id=engagement.id,
             document_id=document_row.id,
@@ -319,4 +319,75 @@ def ingest_fs(
         )
 
 
-__all__ = ["FsIngestResult", "file_hash", "ingest_fs"]
+@dataclass
+class FsCoverageReport:
+    """Label coverage for a financial-statement document (no persistence)."""
+
+    path: str
+    reader: str
+    company: str
+    period: str
+    unit: str
+    rows: int
+    mapped: int
+    by_layer: dict[str, int] = field(default_factory=dict)
+    encoder: str = "none"
+    tuned: bool = False
+    unmapped: list[tuple[str, str]] = field(default_factory=list)  # (statement, label)
+
+    @property
+    def unmapped_rows(self) -> int:
+        return self.rows - self.mapped
+
+    @property
+    def coverage(self) -> float:
+        return self.mapped / self.rows if self.rows else 0.0
+
+
+def fs_coverage(
+    path: str | Path,
+    kind: Optional[str] = None,
+    client: Optional[str] = None,
+    encoder_kind: Optional[str] = None,
+    taxonomy=None,
+    groups=None,
+) -> FsCoverageReport:
+    """Dry-run the FS labelling path for a document and report its coverage.
+
+    Shared by ``auditiq fs coverage`` and the web harness; persists nothing.
+    """
+    document = read_fs(path, kind)
+    statements = extract_statements(document)
+    if not statements:
+        raise ValueError("no statement detected in document")
+
+    taxonomy = taxonomy or load_default_taxonomy()
+    resolved_groups = groups if groups is not None else load_default_groups(taxonomy=taxonomy)
+    mapper, _thresholds, resolved_encoder, tuned = build_fs_mapper(
+        taxonomy=taxonomy, client=client, encoder_kind=encoder_kind
+    )
+    labelled = label_rows(
+        statements, mapper, client=client or "", groups=resolved_groups
+    )
+    summary = summarise(labelled, resolved_encoder, tuned)
+
+    return FsCoverageReport(
+        path=str(path),
+        reader=document.reader_kind,
+        company=document.company,
+        period=document.period or "",
+        unit=document.unit or "absolute",
+        rows=summary.rows,
+        mapped=summary.mapped,
+        by_layer=dict(summary.by_layer),
+        encoder=resolved_encoder,
+        tuned=tuned,
+        unmapped=[
+            (STATEMENT_LABELS.get(item.statement, item.statement), item.row.label)
+            for item in labelled
+            if not item.mapped
+        ],
+    )
+
+
+__all__ = ["FsIngestResult", "FsCoverageReport", "file_hash", "fs_coverage", "ingest_fs"]

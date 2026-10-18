@@ -101,8 +101,29 @@ auditiq tune path/to/labelled.csv --split dev --client T00
 ```
 
 Results land in the `tb_mapping` table (`fsli_code`, `method`, `confidence`,
-`status`). The embedding gate needs the `[mapping]` extra (`pip install -e ".[mapping]"`);
+`status`, and the persisted cascade shortlist for pending heads). The embedding
+gate needs the `[mapping]` extra (`pip install -e ".[mapping]"`);
 without it the cascade runs dictionary-only.
+
+### Mapping review queue
+
+Heads the cascade cannot accept are exposure to reconciliation. The review
+commands close the loop: approve a head (every ledger line sharing it is resolved
+at once), and reconciliation reads it as accepted immediately — no re-map needed.
+When `map` runs again, approved heads replay through the **cache layer** with the
+reviewer's choice and name intact (they stay `resolved`, not downgraded to
+`auto`).
+
+```bash
+# What is waiting, largest exposure first, with the cascade's candidate FSLIs
+auditiq review list --client T00 --period FY25-26
+
+# Approve a head: `line` is any line id shown by `review list`
+auditiq review resolve 15 --fsli EXP_EMP --reviewer "S. Mehta"
+
+# Undo (the head returns to the queue)
+auditiq review reset 15
+```
 
 ## Financial-statement ingestion (reconciliation Side B)
 
@@ -161,6 +182,18 @@ auditiq materiality set --client T00 --period FY25-26 --value 1000000 --basis-na
 auditiq recon run   --client T00 --period FY25-26 [--materiality 1000000] [--pm 0.75] [--statement BS]
 auditiq recon show  --client T00 --period FY25-26 [--severity material]
 auditiq recon explain AST_TR --client T00 --period FY25-26
+
+# Material variances escalate to the exception queue
+auditiq exceptions list    --client T00 --period FY25-26 [--status open]
+auditiq exceptions dispose 3 --status explained --note "timing difference in receivables"
+```
+
+An `fs_line` that resolved to neither an FSLI nor a group is Side B exposure too;
+review it like the mapping queue:
+
+```bash
+auditiq fs-review list    --client T00 --period FY25-26   # unmapped presentation labels
+auditiq fs-review resolve 7 --fsli EXP_OTH                 # fix current + prior rows at once
 ```
 
 ```bash

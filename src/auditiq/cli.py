@@ -7,17 +7,19 @@ from . import __version__
 from .core import load_default_taxonomy
 from .ingest.erp import ADAPTERS, ingest_tb
 from .ingest.fs import (
-    build_fs_mapper,
-    extract_statements,
+    fs_coverage,
     ingest_fs,
-    label_rows,
-    read_fs,
-    summarise,
+    list_unmapped_fs,
+    reset_fs_line,
+    resolve_fs_line,
 )
 from .ingest.prepare import (
     default_encoder_kind,
+    list_pending,
     load_labelled_csv,
     map_engagement,
+    reset_mapping,
+    resolve_mapping,
     save_thresholds,
     tune_thresholds,
 )
@@ -31,6 +33,7 @@ from .reconciliation import (
 )
 from .store import init_db, session_scope
 from .store.models import Engagement, FsLine, NoteItem, ReconLine, ReconRun, TbLine
+from .store.queries import dispose_exception, list_exceptions
 
 app = typer.Typer(help="AuditIQ Core — ingestion, reconciliation and review.", no_args_is_help=True)
 taxonomy_app = typer.Typer(help="Inspect the Schedule III FSLI taxonomy.", no_args_is_help=True)
@@ -39,12 +42,18 @@ ingest_app = typer.Typer(help="Ingest source data (trial balances, statements)."
 fs_app = typer.Typer(help="Financial-statement ingestion and coverage.", no_args_is_help=True)
 recon_app = typer.Typer(help="Reconcile the books with the draft financial statements.", no_args_is_help=True)
 materiality_app = typer.Typer(help="Set and suggest engagement materiality.", no_args_is_help=True)
+review_app = typer.Typer(help="Resolve pending FSLI mappings (the review queue).", no_args_is_help=True)
+fsreview_app = typer.Typer(help="Resolve unmapped financial-statement labels.", no_args_is_help=True)
+exceptions_app = typer.Typer(help="Inspect and disposition audit exceptions.", no_args_is_help=True)
 app.add_typer(taxonomy_app, name="taxonomy")
 app.add_typer(store_app, name="store")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(fs_app, name="fs")
 app.add_typer(recon_app, name="recon")
 app.add_typer(materiality_app, name="materiality")
+app.add_typer(review_app, name="review")
+app.add_typer(fsreview_app, name="fs-review")
+app.add_typer(exceptions_app, name="exceptions")
 
 # Accept short codes as well as the full statement names used in the schema.
 _STATEMENT_ALIASES = {
@@ -236,34 +245,22 @@ def fs_coverage_command(
 ) -> None:
     """Report FS-label -> FSLI coverage for a document (no persistence)."""
     try:
-        document = read_fs(path, kind)
+        report = fs_coverage(path, kind=kind, client=client, encoder_kind=encoder)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
-    statements = extract_statements(document)
-    if not statements:
-        typer.secho("error: no statement detected in document", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-
-    mapper, _thresholds, encoder_kind, tuned = build_fs_mapper(
-        client=client, encoder_kind=encoder
-    )
-    labelled = label_rows(statements, mapper, client=client or "")
-    summary = summarise(labelled, encoder_kind, tuned)
-
-    typer.echo(f"document      {path}")
-    typer.echo(f"encoder       {summary.encoder}{'' if summary.tuned else '  (untuned defaults)'}")
-    typer.echo(f"rows          {summary.rows}")
-    typer.echo(f"coverage      {summary.mapped}/{summary.rows} ({summary.coverage:.1%})")
-    for layer, count in sorted(summary.by_layer.items()):
+    typer.echo(f"document      {report.path}")
+    typer.echo(f"encoder       {report.encoder}{'' if report.tuned else '  (untuned defaults)'}")
+    typer.echo(f"rows          {report.rows}")
+    typer.echo(f"coverage      {report.mapped}/{report.rows} ({report.coverage:.1%})")
+    for layer, count in sorted(report.by_layer.items()):
         typer.echo(f"  by {layer:<6} {count}")
 
-    unmapped = [item for item in labelled if not item.mapped]
-    if unmapped:
+    if report.unmapped:
         typer.echo("unmapped:")
-        for item in unmapped:
-            typer.echo(f"  [{item.statement}] {item.row.label}")
+        for statement, label in report.unmapped:
+            typer.echo(f"  [{statement}] {label}")
 
 
 def _resolve_engagement_id(engagement, client, period, basis) -> int:
@@ -371,6 +368,168 @@ def tune_command(
     typer.echo(f"  tau_e={thresholds.tau_e}  delta={thresholds.delta}  tau_l={thresholds.tau_l}  k={thresholds.k}")
     typer.echo(f"saved {path}")
     typer.echo(json.dumps(report, indent=2, default=str))
+
+
+def _review_target(
+    engagement: int | None,
+    client: str | None,
+    period: str | None,
+    basis: str,
+) -> int:
+    return _resolve_engagement_id(engagement, client, period, basis)
+
+
+@review_app.command("list")
+def review_list_command(
+    engagement: int = typer.Option(None, "--engagement", "-e", help="Engagement id."),
+    client: str = typer.Option(None, "--client", "-c", help="Client code (with --period)."),
+    period: str = typer.Option(None, "--period", "-p", help="Financial year (with --client)."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+) -> None:
+    """List ledger heads awaiting review (largest exposure first)."""
+    engagement_id = _review_target(engagement, client, period, basis)
+    heads = list_pending(engagement_id)
+    if not heads:
+        typer.secho("review queue empty — every head is accepted", fg=typer.colors.GREEN)
+        return
+    typer.echo(f"{len(heads)} pending head(s) for engagement #{engagement_id}")
+    for head in heads:
+        candidates = ",".join(head.candidates) or "-"
+        typer.echo(
+            f"  #{head.line_id:>6}  {_money(head.amount):>16}  x{head.lines:<2} "
+            f"{head.raw_name[:36]:<36} [{head.method}] cand: {candidates}"
+        )
+    typer.echo("\nresolve with: auditiq review resolve <line-id> --fsli <CODE>")
+
+
+@review_app.command("resolve")
+def review_resolve_command(
+    line: int = typer.Argument(..., help="Line id shown by `review list` (any line of the head)."),
+    fsli: str = typer.Option(..., "--fsli", "-f", help="FSLI code the reviewer chooses."),
+    reviewer: str = typer.Option("", "--reviewer", "-r", help="Reviewer name (optional)."),
+) -> None:
+    """Approve a head: record the reviewer's FSLI choice."""
+    try:
+        result = resolve_mapping(line, fsli, reviewer=reviewer)
+    except ValueError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.secho(
+        f"resolved  {result.head} -> {result.fsli_code}  ({result.resolved_lines} line(s))",
+        fg=typer.colors.GREEN,
+    )
+
+
+@review_app.command("reset")
+def review_reset_command(
+    line: int = typer.Argument(..., help="Line id shown by `review list` (any line of the head)."),
+) -> None:
+    """Undo a reviewer resolution; the head returns to the queue."""
+    try:
+        result = reset_mapping(line)
+    except ValueError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"reset     {result.head}  (back to pending review)")
+
+
+@fsreview_app.command("list")
+def fs_review_list_command(
+    engagement: int = typer.Option(None, "--engagement", "-e", help="Engagement id."),
+    client: str = typer.Option(None, "--client", "-c", help="Client code (with --period)."),
+    period: str = typer.Option(None, "--period", "-p", help="Financial year (with --client)."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+) -> None:
+    """List financial-statement labels that resolved to neither an FSLI nor a group."""
+    engagement_id = _review_target(engagement, client, period, basis)
+    labels = list_unmapped_fs(engagement_id)
+    if not labels:
+        typer.secho("no unmapped financial-statement labels", fg=typer.colors.GREEN)
+        return
+    typer.echo(f"{len(labels)} unmapped label(s) for engagement #{engagement_id}")
+    for entry in labels:
+        typer.echo(
+            f"  #{entry.line_id:>6}  {_money(entry.total):>16}  x{entry.rows:<2} "
+            f"[{entry.statement:<3}] {entry.label[:40]}"
+        )
+    typer.echo(
+        "\nresolve with: auditiq fs-review resolve <line-id> --fsli <CODE> (or --group <CODE>)"
+    )
+
+
+@fsreview_app.command("resolve")
+def fs_review_resolve_command(
+    line: int = typer.Argument(..., help="FS line id shown by `fs-review list`."),
+    fsli: str = typer.Option(None, "--fsli", "-f", help="FSLI code the reviewer chooses."),
+    group: str = typer.Option(None, "--group", "-g", help="Presentation group code (e.g. REV_OPERATIONS)."),
+) -> None:
+    """Resolve an unmapped financial-statement label (applies to all its period rows)."""
+    try:
+        result = resolve_fs_line(line, fsli_code=fsli, group_code=group)
+    except ValueError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    target = result.fsli_code or result.group_code
+    typer.secho(
+        f"resolved  {result.label} -> {target}  ({result.resolved_rows} row(s))",
+        fg=typer.colors.GREEN,
+    )
+
+
+@fsreview_app.command("reset")
+def fs_review_reset_command(
+    line: int = typer.Argument(..., help="FS line id shown by `fs-review list`."),
+) -> None:
+    """Undo a manual FS resolution; the label returns to the unmapped queue."""
+    try:
+        result = reset_fs_line(line)
+    except ValueError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"reset     {result.label}  (back to unmapped)")
+
+
+@exceptions_app.command("list")
+def exceptions_list_command(
+    engagement: int = typer.Option(None, "--engagement", "-e", help="Engagement id."),
+    client: str = typer.Option(None, "--client", "-c", help="Client code (with --period)."),
+    period: str = typer.Option(None, "--period", "-p", help="Financial year (with --client)."),
+    basis: str = typer.Option("Standalone", "--basis", help="Standalone or Consolidated."),
+    status: str = typer.Option(None, "--status", help="Filter: open | explained | accepted."),
+) -> None:
+    """List exception records awaiting disposition."""
+    if engagement is None and not (client and period):
+        raise typer.BadParameter("provide --engagement, or both --client and --period")
+    engagement_id = _review_target(engagement, client, period, basis)
+    rows = list_exceptions(engagement_id, status=status)
+    if not rows:
+        typer.echo("no exceptions")
+        return
+    typer.echo(f"{len(rows)} exception(s) for engagement #{engagement_id}")
+    for item in rows:
+        typer.echo(
+            f"  #{item.exception_id:>5}  {item.kind:<7} {item.severity:<8} "
+            f"{item.status:<9} {_money(item.amount):>14}  "
+            f"{item.fsli or '-':<14} {item.note or ''}"
+        )
+    typer.echo("\ndispose with: auditiq exceptions dispose <id> --status explained|accepted")
+
+
+@exceptions_app.command("dispose")
+def exceptions_dispose_command(
+    exception_id: int = typer.Argument(..., help="Exception id (see `exceptions list`)."),
+    status: str = typer.Option(..., "--status", "-s", help="explained or accepted."),
+    note: str = typer.Option("", "--note", "-n", help="Reviewer note."),
+) -> None:
+    """Record an exception's disposition."""
+    try:
+        item = dispose_exception(exception_id, status, note=note)
+    except ValueError as exc:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"exception #{item.exception_id}  status -> {item.status}")
+    if item.note:
+        typer.echo(f"  note: {item.note}")
 
 
 def _money(value: float | None) -> str:

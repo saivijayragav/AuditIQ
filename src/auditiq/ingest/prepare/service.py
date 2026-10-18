@@ -6,8 +6,10 @@ runs feed the cache layer, so repeated uploads resolve faster.
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import delete, select
@@ -41,6 +43,23 @@ class MappingSummary:
 
 def _head_key(client_code: str, system: str, raw_code: str, raw_name: str) -> tuple:
     return (client_code, system, raw_code or nu(raw_name))
+
+
+def _candidates_payload(result: MapResult) -> Optional[str]:
+    """Persist the cascade shortlist (+embed scores) for the review queue."""
+    if not result.candidates:
+        return None
+    return json.dumps(
+        {
+            "codes": list(result.candidates),
+            "embed_score": result.embed_score,
+            "embed_margin": result.embed_margin,
+        }
+    )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def map_engagement(
@@ -83,17 +102,32 @@ def map_engagement(
         ).all()
 
         # Reviewer-resolved mappings from earlier runs seed the cache layer.
+        # ``cache_meta`` keeps their provenance so a re-run restores them as
+        # ``resolved`` (reviewer choice intact), not a plain auto-match.
         cache: dict[tuple, str] = {}
+        cache_meta: dict[tuple, dict] = {}
         resolved_rows = session.execute(
-            select(TbLine, SourceDocument.system, TbMapping.fsli_code, TbMapping.resolved_fsli)
+            select(
+                TbLine,
+                SourceDocument.system,
+                TbMapping.fsli_code,
+                TbMapping.resolved_fsli,
+                TbMapping.reviewer,
+                TbMapping.resolved_at,
+            )
             .join(SourceDocument, TbLine.document_id == SourceDocument.id)
             .join(TbMapping, TbMapping.line_id == TbLine.id)
             .where(TbLine.engagement_id == engagement_id, TbMapping.status == "resolved")
         ).all()
-        for line, system, fsli_code, resolved_fsli in resolved_rows:
+        for line, system, fsli_code, resolved_fsli, reviewer, resolved_at in resolved_rows:
             choice = resolved_fsli or fsli_code
             if choice:
-                cache[_head_key(line.client_code, system, line.raw_code, line.raw_name)] = choice
+                key = _head_key(line.client_code, system, line.raw_code, line.raw_name)
+                cache[key] = choice
+                cache_meta[key] = {
+                    "reviewer": reviewer,
+                    "resolved_at": resolved_at,
+                }
 
         if rows:
             line_ids = [line.id for line, _ in rows]
@@ -123,13 +157,31 @@ def map_engagement(
             if result.auto_accepted:
                 resolved_count += 1
 
+            status = "auto" if result.auto_accepted else "pending_review"
+            reviewer = None
+            resolved_fsli = None
+            resolved_at = None
+            if layer == "cache" and key in cache_meta:
+                # This auto-match replays a reviewer's earlier decision: keep it
+                # as ``resolved`` with the original provenance instead of
+                # downgrading it to ``auto``.
+                meta = cache_meta[key]
+                status = "resolved"
+                reviewer = meta.get("reviewer")
+                resolved_at = meta.get("resolved_at") or _utcnow()
+                resolved_fsli = cache.get(key)
+
             session.add(
                 TbMapping(
                     line_id=line.id,
                     fsli_code=result.fsli_code,
                     method=layer,
                     confidence=result.confidence,
-                    status="auto" if result.auto_accepted else "pending_review",
+                    status=status,
+                    reviewer=reviewer,
+                    resolved_fsli=resolved_fsli,
+                    resolved_at=resolved_at,
+                    candidates_json=_candidates_payload(result),
                 )
             )
 
