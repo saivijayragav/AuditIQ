@@ -11,12 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from _draft_fs import schedule_iii_rows, write_fs_pdf
+from _tb_writer import write_tb_bytes
 
 from auditiq.api import create_app
 from auditiq.core import load_default_taxonomy
 from auditiq.store import db, init_db
 
-from test_api_e2e import PRESENTED, _tb_xlsx_bytes
+from test_api_e2e import MYSTERY_HEADS, PRESENTED
 
 
 @pytest.fixture
@@ -61,7 +62,7 @@ def test_ui_ingest_map_review_materiality_recon(ui):
     # TB upload (multipart, like a real browser)
     r = client.post(
         f"/ui/engagements/{eid}/ingest/tb",
-        files={"file": ("tb.xlsx", _tb_xlsx_bytes(), "application/vnd.openxmlformats")},
+        files={"file": ("tb.xlsx", write_tb_bytes(MYSTERY_HEADS), "application/vnd.openxmlformats")},
     )
     assert r.status_code == 200 and "TB ingested" in r.text and "balanced" in r.text
 
@@ -142,7 +143,7 @@ def test_ui_review_resolve_and_bulk(ui):
 
     client.post(
         f"/ui/engagements/{eid}/ingest/tb",
-        files={"file": ("tb.xlsx", _tb_xlsx_bytes(), "application/vnd.openxmlformats")},
+        files={"file": ("tb.xlsx", write_tb_bytes(MYSTERY_HEADS), "application/vnd.openxmlformats")},
     )
     client.post(f"/ui/engagements/{eid}/map", data={"encoder": "none"})
 

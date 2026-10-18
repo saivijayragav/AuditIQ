@@ -6,32 +6,17 @@ fs-review. Mirrors the CLI e2e gate at the API level; no browser, no node.
 """
 from __future__ import annotations
 
-import io
-
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
 
 from _draft_fs import schedule_iii_rows, write_fs_pdf
+from _tb_writer import DEFAULT_HEADS, write_tb_bytes
 
 from auditiq.api import create_app
 from auditiq.core import load_default_taxonomy
 from auditiq.store import db, init_db
 
 # Deterministic vocabulary: these heads resolve through the alias dictionary.
-BASE = {
-    "Sundry Debtors": ("AST_TR", 1000.0),          # Dr
-    "Inventory": ("AST_INV", 700.0),               # Dr
-    "Cash in Hand": ("AST_CASH", 500.0),           # Dr
-    "Cost of Materials Consumed": ("EXP_MAT", 1200.0),  # Dr
-    "Other Expenses": ("EXP_OTH", 800.0),          # Dr
-    "Sundry Creditors": ("LIA_TP", -700.0),        # Cr
-    "Share Capital": ("EQ_SC", -1500.0),           # Cr
-    "Revenue from Operations": ("INC_REV_SALES", -2000.0),  # Cr
-    # Two heads the cascade cannot accept; balanced against each other.
-    "Zzz Mystery Ledger A": (None, 123.0),         # Dr
-    "Zzz Mystery Ledger B": (None, -123.0),        # Cr
-}
 PRESENTED = {
     "AST_TR": 1000.0,
     "AST_CASH": 500.0,
@@ -43,25 +28,12 @@ PRESENTED = {
     "EQ_SC": 1500.0,
 }
 
-
-def _tb_xlsx_bytes() -> bytes:
-    rows = [["Test Co Limited"], ["Account", "Account Code", "Account Type", "Debit", "Credit"]]
-    for name, (_code, amount) in BASE.items():
-        if amount >= 0:
-            row = [name, "", "", amount, None]
-        else:
-            row = [name, "", "", None, -amount]
-        rows.append(row)
-    debit = sum(a for _, a in BASE.values() if a > 0)
-    credit = sum(-a for _, a in BASE.values() if a < 0)
-    rows.append(["Total", "", "", debit, credit])
-    workbook = Workbook()
-    sheet = workbook.active
-    for row in rows:
-        sheet.append(list(row))
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    return buffer.getvalue()
+# Two heads the cascade cannot accept — pending-review exposure, balanced against
+# each other so the workbook itself still ties.
+MYSTERY_HEADS = list(DEFAULT_HEADS) + [
+    ("Zzz Mystery Ledger A", None, 123.0),
+    ("Zzz Mystery Ledger B", None, -123.0),
+]
 
 
 def _draft_fs_pdf(tmp_path):
@@ -108,18 +80,18 @@ def test_api_full_pipeline(client_api):
     # -- ingest TB (upload) --------------------------------------------------
     r = client.post(
         f"/api/engagements/{eid}/ingest/tb",
-        files={"file": ("tb.xlsx", _tb_xlsx_bytes(), "application/vnd.openxmlformats")},
+        files={"file": ("tb.xlsx", write_tb_bytes(MYSTERY_HEADS), "application/vnd.openxmlformats")},
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["lines"] == len(BASE)
+    assert body["lines"] == len(MYSTERY_HEADS)
     assert body["balanced"]
 
     # -- map (dictionary only) ----------------------------------------------
     r = client.post(f"/api/engagements/{eid}/map", json={"encoder": "none"})
     assert r.status_code == 200, r.text
     summary = r.json()
-    assert summary["lines"] == len(BASE)
+    assert summary["lines"] == len(MYSTERY_HEADS)
     assert summary["resolved"] == 8
     assert summary["review"] == 2
     summary_by_status = client.get(f"/api/engagements/{eid}").json()
@@ -208,7 +180,7 @@ def test_api_full_pipeline(client_api):
     assert r.status_code == 200 and r.json()["line"]["unit_code"] == "AST_TR"
 
     # -- undo the approval: back to tied -------------------------------------
-    r = client.post(f"/api/mappings/{pending[0]['line_id']}/reset")
+    r = client.post(f"/api/mappings/{target['line_id']}/reset")
     assert r.status_code == 200, r.text
 
     r = client.post(f"/api/engagements/{eid}/recon/run", json={})
