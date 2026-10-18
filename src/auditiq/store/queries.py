@@ -33,28 +33,14 @@ class EngagementSummary:
     fs_subtotals: int = 0
     fs_unmapped_rows: int = 0
     mappings: dict[str, int] = field(default_factory=dict)  # status -> line count
+    resolved_lines: int = 0
+    pending_lines: int = 0
+    intake_status: str = "intake"
     recon_run_id: Optional[int] = None
     recon_status: Optional[str] = None
     recon_exposure_a: float = 0.0
     recon_exposure_b: float = 0.0
     open_exceptions: int = 0
-
-    @property
-    def resolved_lines(self) -> int:
-        """Trial-balance lines with an accepted mapping (auto or resolved)."""
-        return self.mappings.get("auto", 0) + self.mappings.get("resolved", 0)
-
-    @property
-    def pending_lines(self) -> int:
-        return self.mappings.get("pending_review", 0) + self.mappings.get("unmapped", 0)
-
-    @property
-    def intake_status(self) -> str:
-        if self.tb_lines and self.fs_lines and self.resolved_lines == self.tb_lines:
-            return "reconcilable"
-        if self.tb_lines and self.fs_documents:
-            return "in progress"
-        return "intake"
 
 
 @dataclass
@@ -70,7 +56,6 @@ class ExceptionInfo:
     fsli: Optional[str]
     note: str = ""
     detail: str = ""
-    exception: str = ""  # textual description for the detail column
 
     def as_text(self) -> str:
         amount = "-" if self.amount is None else f"{self.amount:,.2f}"
@@ -115,6 +100,8 @@ def _engagement_summary(session, engagement: Engagement) -> EngagementSummary:
     for _line_id, status in rows:
         status = status or "unmapped"
         summary.mappings[status] = summary.mappings.get(status, 0) + 1
+    summary.resolved_lines = summary.mappings.get("auto", 0) + summary.mappings.get("resolved", 0)
+    summary.pending_lines = summary.mappings.get("pending_review", 0) + summary.mappings.get("unmapped", 0)
 
     summary.fs_lines = session.scalar(
         select(func.count(FsLine.id)).where(FsLine.engagement_id == e_id)
@@ -140,13 +127,6 @@ def _engagement_summary(session, engagement: Engagement) -> EngagementSummary:
         summary.recon_run_id = run.id
         summary.recon_exposure_a = run.exposure_a
         summary.recon_exposure_b = run.exposure_b
-        counts = {
-            "tied": run.tied,
-            "rounding": run.rounding,
-            "minor": run.minor,
-            "watch": run.watch,
-            "material": run.material,
-        }
         summary.recon_status = (
             "material differences" if run.material
             else "watch items" if run.watch
@@ -159,6 +139,10 @@ def _engagement_summary(session, engagement: Engagement) -> EngagementSummary:
             ExceptionRecord.engagement_id == e_id, ExceptionRecord.status == "open"
         )
     )
+    if summary.tb_lines and summary.fs_lines and summary.resolved_lines == summary.tb_lines:
+        summary.intake_status = "reconcilable"
+    elif summary.tb_lines and summary.fs_documents:
+        summary.intake_status = "in progress"
     return summary
 
 
@@ -170,6 +154,42 @@ def engagement_summary(engagement_id: int, url: Optional[str] = None) -> Engagem
         if engagement is None:
             raise ValueError(f"no engagement with id {engagement_id}")
         return _engagement_summary(session, engagement)
+
+
+def create_engagement(
+    client_code: str,
+    period: str,
+    basis: str = "Standalone",
+    client_name: str = "",
+    url: Optional[str] = None,
+) -> EngagementSummary:
+    """Create (or return the existing) engagement and report its status."""
+    from ..core.periods import normalize_fy
+
+    if not client_code or not period:
+        raise ValueError("client_code and period are required")
+    normalized = normalize_fy(period) or period
+    init_db(url)
+    with session_scope(url) as session:
+        row = session.scalars(
+            select(Engagement).where(
+                Engagement.client_code == client_code.strip(),
+                Engagement.period == normalized,
+                Engagement.basis == basis,
+            )
+        ).one_or_none()
+        if row is None:
+            row = Engagement(
+                client_code=client_code.strip(),
+                client_name=client_name or client_code.strip(),
+                period=normalized,
+                basis=basis,
+            )
+            session.add(row)
+            session.flush()
+        elif client_name:
+            row.client_name = client_name
+        return _engagement_summary(session, row)
 
 
 def list_engagements(url: Optional[str] = None) -> list[EngagementSummary]:
@@ -205,7 +225,6 @@ def list_exceptions(
                 fsli=row.fsli_code,
                 note=row.note or "",
                 detail=row.detail or "",
-                exception="",
             )
             for row in rows
         ]
@@ -240,13 +259,13 @@ def dispose_exception(
             fsli=row.fsli_code,
             note=row.note or "",
             detail=row.detail or "",
-            exception="",
         )
 
 
 __all__ = [
     "EngagementSummary",
     "ExceptionInfo",
+    "create_engagement",
     "dispose_exception",
     "engagement_summary",
     "list_engagements",

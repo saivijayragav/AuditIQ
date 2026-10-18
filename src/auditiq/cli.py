@@ -804,5 +804,32 @@ def recon_explain_command(
                 typer.echo(f"  {name[:44]:<44} {_money(amount):>18}")
 
 
+@app.command("serve")
+def serve_command(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (loopback only by design)."),
+    port: int = typer.Option(8765, "--port", min=1, max=65535),
+    reload: bool = typer.Option(False, "--reload", help="Dev auto-reload."),
+) -> None:
+    """Serve the AuditIQ web harness (JSON API + UI) on this machine."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        typer.secho(
+            'error: the web harness needs the [web] extra: pip install -e ".[web]"',
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    from .settings import DATABASE_URL
+
+    typer.echo(f"serving AuditIQ {__version__}  db {DATABASE_URL}")
+    if reload:
+        uvicorn.run("auditiq.api.app:create_app", factory=True, host=host, port=port, reload=reload)
+    else:
+        from .api import create_app
+
+        uvicorn.run(create_app(), host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
