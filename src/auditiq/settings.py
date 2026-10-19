@@ -48,6 +48,28 @@ GROUP_ALIASES_PATH: Path = Path(
 # Database (SQLite by default; swap the URL for Postgres later).
 DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'auditiq.db'}")
 
+# --- HTTP API -------------------------------------------------------------
+# Origins allowed to call the API from a browser. The frontend is a separate
+# app, so local dev servers are permitted by default; override for anything else.
+CORS_ORIGINS: list[str] = [
+    origin.strip()
+    for origin in os.getenv(
+        "AUDITIQ_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
+# Reading a file straight off the server's disk is a CLI affordance. A browser
+# client has no business doing it, so it is off unless explicitly enabled.
+ALLOW_PATH_INGEST: bool = os.getenv("AUDITIQ_ALLOW_PATH_INGEST", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # Optional LLM layer.
 GOOGLE_API_KEY: str | None = os.getenv("GOOGLE_API_KEY")
 LLM_MODEL: str = os.getenv("AUDITIQ_LLM_MODEL", "gemini-3.1-flash-lite")

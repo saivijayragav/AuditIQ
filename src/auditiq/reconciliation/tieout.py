@@ -51,6 +51,22 @@ class ReconLineResult:
         return self.unit.code
 
     @property
+    def unit_code(self) -> str:
+        return self.unit.code
+
+    @property
+    def name(self) -> str:
+        return self.unit.name
+
+    @property
+    def statement(self) -> str:
+        return self.unit.statement
+
+    @property
+    def is_group(self) -> bool:
+        return self.unit.is_group
+
+    @property
     def refs_json(self) -> str:
         return json.dumps(
             {
