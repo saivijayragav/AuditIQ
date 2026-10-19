@@ -3,9 +3,9 @@
 Deterministic ingestion, reconciliation and review of Indian statutory audit data
 (Ind AS / Schedule III of the Companies Act, 2013).
 
-> Status: **P3** — ERP ingestion, the FSLI mapping cascade (with a working
+> Status: **P4** — ERP ingestion, the FSLI mapping cascade (with a working
 > review queue), modular financial-statement ingestion, reconciliation and a
-> typed HTTP API contract are in place.
+> typed, documented HTTP API contract are in place.
 
 ## What this repository does
 
@@ -30,6 +30,7 @@ src/auditiq/store/      SQLAlchemy schema, sessions + engagement queries
 src/auditiq/ingest/     ERP + financial-statement ingestion, mapping cascade, review queue
 src/auditiq/reconciliation/  Side A / Side B tie-out, materiality gates, attribution
 src/auditiq/api/        Typed JSON API + OpenAPI contract (auditiq serve)
+docs/                   API reference (docs/API.md)
 data/                   Local run data (gitignored)
 tests/                  Test suite
 ```
@@ -207,22 +208,27 @@ auditiq fs coverage Financial_Report_Analysis_Agent/itc-r-and-a-consolidated-fin
 ## HTTP API
 
 The backend exposes a framework-agnostic JSON API with a typed OpenAPI contract.
-The UI is a **separate client** — this repository ships no HTML.
+The UI is a **separate client** — this repository ships no HTML. See
+[`docs/API.md`](docs/API.md) for the endpoint reference, error codes and a
+generated-client sketch.
 
 ```bash
 pip install -e ".[web]"
-auditiq serve                       # http://127.0.0.1:8765 (loopback only)
-auditiq serve --port 9000 --reload  # dev mode
-auditiq api schema --out openapi.json   # export the contract
+auditiq serve                            # http://127.0.0.1:8765 (loopback only)
+auditiq serve --port 9000 --reload       # dev mode
+auditiq api schema --out openapi.json    # export the contract (no server needed)
 ```
 
-* `/api/...` — the contract; every route declares a typed response and a
-  documented error envelope.
+* `/api/...` — the contract; every route declares a typed response, a summary and
+  a documented error envelope. Lists are bare arrays; paging is explicit.
 * `/docs` — interactive OpenAPI (Swagger UI); `/openapi.json` — the raw spec,
   ready for `openapi-typescript`, `orval`, or any codegen.
-* `docs/API.md` — endpoint table, error codes and the enum vocabulary.
+* Errors always look like `{"error": {"code", "message", "details"}}`; `code` is a
+  closed enum, so clients branch on it rather than on prose.
 
 CORS is restricted to local dev origins by default; override with
-`AUDITIQ_CORS_ORIGINS`. Routes never re-implement business rules — they call the
-same services as the CLI.
+`AUDITIQ_CORS_ORIGINS`. Reading a server-side `path` over HTTP is disabled unless
+`AUDITIQ_ALLOW_PATH_INGEST=1`; browsers should upload the file. Routes never
+re-implement business rules — they call the same services as the CLI.
+
 

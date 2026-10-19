@@ -1,6 +1,10 @@
 """AuditIQ Core command-line interface."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Optional
+
 import typer
 
 from . import __version__
@@ -45,6 +49,7 @@ materiality_app = typer.Typer(help="Set and suggest engagement materiality.", no
 review_app = typer.Typer(help="Resolve pending FSLI mappings (the review queue).", no_args_is_help=True)
 fsreview_app = typer.Typer(help="Resolve unmapped financial-statement labels.", no_args_is_help=True)
 exceptions_app = typer.Typer(help="Inspect and disposition audit exceptions.", no_args_is_help=True)
+api_app = typer.Typer(help="Inspect the HTTP API contract (OpenAPI).", no_args_is_help=True)
 app.add_typer(taxonomy_app, name="taxonomy")
 app.add_typer(store_app, name="store")
 app.add_typer(ingest_app, name="ingest")
@@ -54,6 +59,7 @@ app.add_typer(materiality_app, name="materiality")
 app.add_typer(review_app, name="review")
 app.add_typer(fsreview_app, name="fs-review")
 app.add_typer(exceptions_app, name="exceptions")
+app.add_typer(api_app, name="api")
 
 # Accept short codes as well as the full statement names used in the schema.
 _STATEMENT_ALIASES = {
@@ -830,18 +836,45 @@ def recon_explain_command(
                 typer.echo(f"  {name[:44]:<44} {_money(amount):>18}")
 
 
+@api_app.command("schema")
+def api_schema(
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Write the document here; omit to print it."
+    ),
+    indent: int = typer.Option(2, "--indent", min=0, max=8, help="JSON indentation."),
+) -> None:
+    """Export the OpenAPI document — no server or network needed."""
+    try:
+        from .api import create_app
+    except ImportError as exc:
+        typer.secho(
+            'error: schema export needs the [web] extra: pip install -e ".[web]"',
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    text = json.dumps(create_app().openapi(), indent=indent or None, sort_keys=True)
+    if out is None:
+        typer.echo(text)
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text + "\n", encoding="utf-8")
+    typer.echo(f"wrote {out}")
+
+
 @app.command("serve")
 def serve_command(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address (loopback only by design)."),
     port: int = typer.Option(8765, "--port", min=1, max=65535),
     reload: bool = typer.Option(False, "--reload", help="Dev auto-reload."),
 ) -> None:
-    """Serve the AuditIQ web harness (JSON API + UI) on this machine."""
+    """Serve the typed JSON API on this machine (docs at /docs)."""
     try:
         import uvicorn
     except ImportError as exc:
         typer.secho(
-            'error: the web harness needs the [web] extra: pip install -e ".[web]"',
+            'error: the API needs the [web] extra: pip install -e ".[web]"',
             fg=typer.colors.RED,
             err=True,
         )
