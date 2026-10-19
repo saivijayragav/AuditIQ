@@ -11,7 +11,14 @@ pymupdf = pytest.importorskip("pymupdf")
 
 from _draft_fs import write_fs_pdf  # noqa: E402
 
-from auditiq.ingest.fs import ingest_fs  # noqa: E402
+from auditiq.core import load_default_taxonomy  # noqa: E402
+from auditiq.ingest.fs import (  # noqa: E402
+    ingest_fs,
+    list_unmapped_fs,
+    reset_fs_line,
+    resolve_fs_line,
+)
+from auditiq.reconciliation import side_b  # noqa: E402
 from auditiq.store import session_scope  # noqa: E402
 from auditiq.store.models import (  # noqa: E402
     Engagement,
@@ -193,6 +200,144 @@ def test_unmapped_label_goes_to_review(tmp_path):
         ).all()
         assert unmapped
         assert all(row.fsli_code is None for row in unmapped)
+
+
+def test_reviewer_decision_replays_on_reingest(tmp_path):
+    """The FS cache is seeded from the stored rows, exactly like the TB cache."""
+    mystery = "Whimsical Disbursements"
+    bs_rows = [("Trade Receivables", 5, 100.0, 90.0), (mystery, None, 99.0, 88.0)]
+    pl_rows = [("Finance Costs", 3, 20.0, 25.0)]
+    path = _draft(tmp_path, bs_rows=bs_rows, pl_rows=pl_rows)
+    url = _url(tmp_path)
+
+    first = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    assert first.unmapped == 2  # current + prior
+
+    with session_scope(url) as session:
+        line_id = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).first().id
+    resolve_fs_line(line_id, fsli_code="AST_INV", url=url)
+    assert list_unmapped_fs(first.engagement_id, url=url) == []
+
+    second = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    assert second.unmapped == 0
+
+    with session_scope(url) as session:
+        replayed = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).all()
+        assert {row.fsli_code for row in replayed} == {"AST_INV"}
+        assert {row.method for row in replayed} == {"cache"}
+
+
+def test_cache_is_scoped_to_the_client(tmp_path):
+    """A decision for one client must not leak into another client's draft."""
+    mystery = "Whimsical Disbursements"
+    bs_rows = [("Trade Receivables", 5, 100.0, 90.0), (mystery, None, 99.0, 88.0)]
+    path = _draft(tmp_path, bs_rows=bs_rows, pl_rows=[])
+    url = _url(tmp_path)
+
+    first = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    with session_scope(url) as session:
+        line_id = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).first().id
+    resolve_fs_line(line_id, fsli_code="AST_INV", url=url)
+
+    other = ingest_fs(
+        path, client_code="T01", period="FY25-26", encoder_kind="none", url=url
+    )
+    assert other.engagement_id != first.engagement_id
+    assert other.unmapped == 2
+    with session_scope(url) as session:
+        rows = session.scalars(
+            select(FsLine).where(
+                FsLine.engagement_id == other.engagement_id,
+                FsLine.source_ref == mystery,
+            )
+        ).all()
+        assert all(row.fsli_code is None for row in rows)
+
+
+def test_reset_after_replay_is_a_tombstone(tmp_path):
+    """A reset must survive the re-ingest that purges the reset rows."""
+    mystery = "Whimsical Disbursements"
+    bs_rows = [("Trade Receivables", 5, 100.0, 90.0), (mystery, None, 99.0, 88.0)]
+    pl_rows = [("Finance Costs", 3, 20.0, 25.0)]
+    path = _draft(tmp_path, bs_rows=bs_rows, pl_rows=pl_rows)
+    url = _url(tmp_path)
+
+    first = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    with session_scope(url) as session:
+        line_id = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).first().id
+    resolve_fs_line(line_id, fsli_code="AST_INV", url=url)
+    ingest_fs(path, client_code="T00", period="FY25-26", encoder_kind="none", url=url)
+
+    with session_scope(url) as session:
+        replayed_id = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).first().id
+    reset_fs_line(replayed_id, url=url)
+    assert len(list_unmapped_fs(first.engagement_id, url=url)) == 1
+
+    third = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    assert third.unmapped == 2
+
+    with session_scope(url) as session:
+        reset_rows = session.scalars(
+            select(FsLine).where(FsLine.source_ref == mystery)
+        ).all()
+        assert all(row.fsli_code is None for row in reset_rows)
+        assert {row.method for row in reset_rows} == {"review"}
+
+
+def test_notes_rows_are_note_total_and_excluded_from_side_b(tmp_path):
+    notes = [
+        ("Inventories", 9, 12345.0, 10000.0),
+        ("Whimsical Note Item", 9, 500.0, 400.0),
+    ]
+    path = _draft(tmp_path, notes_rows=notes)
+    url = _url(tmp_path)
+
+    result = ingest_fs(
+        path, client_code="T00", period="FY25-26", encoder_kind="none", url=url
+    )
+    assert result.by_statement["Notes"] == 4
+
+    with session_scope(url) as session:
+        note_rows = session.scalars(
+            select(FsLine).where(FsLine.statement == "Notes")
+        ).all()
+        assert len(note_rows) == 4
+        assert {row.measure for row in note_rows} == {"note_total"}
+
+        side = side_b(
+            session,
+            result.engagement_id,
+            load_default_taxonomy(),
+            period="FY25-26",
+        )
+        assert "AST_INV" not in side.by_fsli
+        assert all(row.statement != "Notes" for row in side.unmapped)
+
+    # Notes never reach the face review queue.
+    assert all(
+        entry.statement != "Notes"
+        for entry in list_unmapped_fs(result.engagement_id, url=url)
+    )
 
 
 def test_missing_file_raises(tmp_path):

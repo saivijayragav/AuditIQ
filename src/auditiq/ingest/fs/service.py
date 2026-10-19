@@ -32,10 +32,18 @@ from ...store.models import (
 )
 from ...store.sync import sync_taxonomy
 from ..prepare.mapper import ALL_LAYERS
-from .base import STATEMENT_LABELS, FsDocument
+from .base import (
+    MEASURE_NOTE_TOTAL,
+    STATEMENT_CF,
+    STATEMENT_EQUITY,
+    STATEMENT_LABELS,
+    STATEMENT_NOTES,
+    FsDocument,
+)
 from .labels import build_fs_mapper, label_rows, summarise
 from .normalize import bind_row, resolve_unit
 from .registry import read_fs
+from .review import load_fs_cache
 from .statements import extract_statements
 from .validation import ValidationIssue, validate_document
 
@@ -163,6 +171,8 @@ def ingest_fs(
     url: Optional[str] = None,
     encoder_kind: Optional[str] = None,
     layers: Sequence[str] = ALL_LAYERS,
+    use_llm: bool = False,
+    llm_cache: Optional[str] = None,
 ) -> FsIngestResult:
     """Read and persist a financial-statement document."""
     path = Path(path)
@@ -176,13 +186,37 @@ def ingest_fs(
     statements = extract_statements(document)
     issues = validate_document(document, normalized_period, resolved_unit, statements)
 
+    llm = None
+    if use_llm:
+        from ..prepare.llm import LLM  # local import keeps the LLM layer optional
+
+        from ...settings import LLM_MODEL
+
+        llm = LLM(LLM_MODEL, llm_cache or "llm_cache.json")
+
     taxonomy = load_default_taxonomy()
     groups = load_default_groups(taxonomy=taxonomy)
     mapper, _thresholds, resolved_encoder, tuned = build_fs_mapper(
-        taxonomy=taxonomy, client=client_code, encoder_kind=encoder_kind
+        taxonomy=taxonomy,
+        client=client_code,
+        encoder_kind=encoder_kind,
+        llm=llm,
     )
-    labelled = label_rows(statements, mapper, client=client_code, layers=layers, groups=groups)
+    # Reviewer decisions are replayed from the stored FS rows themselves, exactly
+    # like the trial-balance cache. Read them *before* ``_purge_prior`` removes an
+    # earlier ingest of the same file.
+    cache = load_fs_cache(client_code, url=url) if "cache" in layers else {}
+    labelled = label_rows(
+        statements,
+        mapper,
+        client=client_code,
+        layers=layers,
+        cache=cache,
+        groups=groups,
+    )
     summary = summarise(labelled, resolved_encoder, tuned)
+    if llm is not None:
+        llm.flush()
 
     digest = file_hash(path)
     init_db(url)
@@ -251,7 +285,14 @@ def ingest_fs(
                 statement=statement_label,
                 layer=item.layer,
             )
+            # Notes, equity and cash-flow rows are stored for provenance but are
+            # not face values: Side B and the review queue only consume ``face``.
             for bound in bound_values:
+                measure = (
+                    MEASURE_NOTE_TOTAL
+                    if item.statement in (STATEMENT_NOTES, STATEMENT_EQUITY, STATEMENT_CF)
+                    else bound.measure
+                )
                 location = bound.location
                 evidence = Evidence(
                     document_id=document_row.id,
@@ -272,7 +313,7 @@ def ingest_fs(
                         method=item.layer,
                         statement=bound.statement,
                         category=category,
-                        measure=bound.measure,
+                        measure=measure,
                         report_value=bound.report_value,
                         unit=bound.unit,
                         normalized_value=bound.normalized_value,
@@ -351,25 +392,45 @@ def fs_coverage(
     encoder_kind: Optional[str] = None,
     taxonomy=None,
     groups=None,
+    use_llm: bool = False,
+    llm_cache: Optional[str] = None,
+    url: Optional[str] = None,
 ) -> FsCoverageReport:
     """Dry-run the FS labelling path for a document and report its coverage.
 
     Shared by ``auditiq fs coverage`` and the web harness; persists nothing.
+    Reviewer decisions and the optional LLM layer are honoured when requested,
+    so the preview matches what an ingest would produce.
     """
     document = read_fs(path, kind)
     statements = extract_statements(document)
     if not statements:
         raise ValueError("no statement detected in document")
 
+    llm = None
+    if use_llm:
+        from ..prepare.llm import LLM
+
+        from ...settings import LLM_MODEL
+
+        llm = LLM(LLM_MODEL, llm_cache or "llm_cache.json")
+
     taxonomy = taxonomy or load_default_taxonomy()
     resolved_groups = groups if groups is not None else load_default_groups(taxonomy=taxonomy)
     mapper, _thresholds, resolved_encoder, tuned = build_fs_mapper(
-        taxonomy=taxonomy, client=client, encoder_kind=encoder_kind
+        taxonomy=taxonomy, client=client, encoder_kind=encoder_kind, llm=llm
     )
+    cache = load_fs_cache(client, url=url) if client else {}
     labelled = label_rows(
-        statements, mapper, client=client or "", groups=resolved_groups
+        statements,
+        mapper,
+        client=client or "",
+        cache=cache,
+        groups=resolved_groups,
     )
     summary = summarise(labelled, resolved_encoder, tuned)
+    if llm is not None:
+        llm.flush()
 
     return FsCoverageReport(
         path=str(path),

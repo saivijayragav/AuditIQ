@@ -19,6 +19,7 @@ from .base import (
     STATEMENT_LABELS,
     STATEMENT_NOTES,
     STATEMENT_PL,
+    CachedLabel,
     FsDocument,
     FsLocation,
     FsPage,
@@ -27,6 +28,7 @@ from .base import (
     FsTable,
 )
 from .labels import (
+    CACHE_LAYER,
     GROUP_LAYER,
     LabelSummary,
     LabelledRow,
@@ -38,7 +40,15 @@ from .labels import (
 )
 from .normalize import BoundValue, bind_row, resolve_unit
 from .registry import detect_reader, get_reader, read_fs, reader_kinds, readers
-from .review import FsResolutionResult, UnmappedLabel, list_unmapped_fs, reset_fs_line, resolve_fs_line
+from .review import (
+    RESET_METHOD,
+    FsResolutionResult,
+    UnmappedLabel,
+    list_unmapped_fs,
+    load_fs_cache,
+    reset_fs_line,
+    resolve_fs_line,
+)
 from .service import FsCoverageReport, FsIngestResult, file_hash, fs_coverage, ingest_fs
 from .statements import (
     classify_page,
@@ -52,10 +62,12 @@ from .statements import (
 from .validation import ValidationIssue, validate_document
 
 __all__ = [
+    "CACHE_LAYER",
     "GROUP_LAYER",
     "MEASURE_FACE",
     "MEASURE_NOTE_TOTAL",
     "MEASURE_SUBTOTAL",
+    "RESET_METHOD",
     "STATEMENT_BS",
     "STATEMENT_CF",
     "STATEMENT_EQUITY",
@@ -64,6 +76,7 @@ __all__ = [
     "STATEMENT_NOTES",
     "STATEMENT_PL",
     "BoundValue",
+    "CachedLabel",
     "FsCoverageReport",
     "FsDocument",
     "FsIngestResult",
@@ -90,6 +103,7 @@ __all__ = [
     "label_row",
     "label_rows",
     "list_unmapped_fs",
+    "load_fs_cache",
     "read_fs",
     "reader_kinds",
     "readers",

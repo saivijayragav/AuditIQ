@@ -75,6 +75,23 @@ class FsRow:
         return MEASURE_SUBTOTAL if self.is_subtotal else MEASURE_FACE
 
 
+@dataclass(frozen=True)
+class CachedLabel:
+    """A reviewer decision replayed by the financial-statement cache layer.
+
+    The target is either an FSLI or a presentation group — never both. Unlike the
+    ledger cache (which maps a head straight to an FSLI) the FS cache has to carry
+    the distinction, because a reviewer may tie a face line out as a group.
+    """
+
+    fsli_code: Optional[str] = None
+    group_code: Optional[str] = None
+
+    @property
+    def code(self) -> Optional[str]:
+        return self.group_code or self.fsli_code
+
+
 @dataclass
 class FsTable:
     """A table extracted from a document, with its raw grid and location."""
@@ -149,6 +166,7 @@ __all__ = [
     "STATEMENT_LABELS",
     "STATEMENT_NOTES",
     "STATEMENT_PL",
+    "CachedLabel",
     "FsDocument",
     "FsLocation",
     "FsPage",

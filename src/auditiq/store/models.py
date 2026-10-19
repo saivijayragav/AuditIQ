@@ -141,11 +141,14 @@ class FsLine(Base):
         String(32), nullable=True, index=True
     )  # presentation group (config, not an FK); set when the face line aggregates
     # How the label was resolved: the cascade layer (group|cache|dict|emb|llm),
-    # or ``manual`` after reviewer resolution. Empty on legacy rows.
+    # ``manual`` after reviewer resolution, or ``reset`` after the reviewer undid
+    # a decision (a cache tombstone). Empty on legacy rows.
     method: Mapped[str] = mapped_column(String(20), default="")
     statement: Mapped[str] = mapped_column(String(16), default="")
     category: Mapped[str] = mapped_column(String(64), default="")
-    measure: Mapped[str] = mapped_column(String(50), default="reported_amount")  # face|subtotal|note_total
+    measure: Mapped[str] = mapped_column(
+        String(50), default="reported_amount"
+    )  # face|subtotal|note_total (non-face statement rows)
     report_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     unit: Mapped[str] = mapped_column(String(20), default="absolute")
     normalized_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

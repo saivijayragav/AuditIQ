@@ -223,6 +223,10 @@ def ingest_fs_command(
     encoder: str = typer.Option(
         None, "--encoder", help="tfidf | sbert | none (default: auto-detect)."
     ),
+    use_llm: bool = typer.Option(
+        False, "--llm", help="Enable the constrained LLM layer (off by default)."
+    ),
+    llm_cache: str = typer.Option("llm_cache.json", "--llm-cache", help="LLM response cache path."),
 ) -> None:
     """Ingest a draft financial statement (reconciliation Side B)."""
     try:
@@ -235,6 +239,8 @@ def ingest_fs_command(
             client_name=name,
             unit=unit,
             encoder_kind=encoder,
+            use_llm=use_llm,
+            llm_cache=llm_cache,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
@@ -258,6 +264,8 @@ def ingest_fs_command(
     for statement, count in sorted(result.by_statement.items()):
         typer.echo(f"  {statement:<10} {count}")
     typer.echo(f"encoder       {result.encoder}{'' if result.tuned else '  (untuned defaults)'}")
+    for layer, count in sorted(result.by_layer.items()):
+        typer.echo(f"  by {layer:<6} {count}")
     for issue in result.issues:
         colour = {
             "error": typer.colors.RED,
@@ -274,10 +282,21 @@ def fs_coverage_command(
     encoder: str = typer.Option(
         None, "--encoder", help="tfidf | sbert | none (default: auto-detect)."
     ),
+    use_llm: bool = typer.Option(
+        False, "--llm", help="Enable the constrained LLM layer (off by default)."
+    ),
+    llm_cache: str = typer.Option("llm_cache.json", "--llm-cache", help="LLM response cache path."),
 ) -> None:
     """Report FS-label -> FSLI coverage for a document (no persistence)."""
     try:
-        report = fs_coverage(path, kind=kind, client=client, encoder_kind=encoder)
+        report = fs_coverage(
+            path,
+            kind=kind,
+            client=client,
+            encoder_kind=encoder,
+            use_llm=use_llm,
+            llm_cache=llm_cache,
+        )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc

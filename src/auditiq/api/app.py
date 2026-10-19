@@ -402,6 +402,7 @@ def engagements_router() -> APIRouter:
         path: Optional[str] = None,
         kind: Optional[str] = None,
         unit: Optional[str] = None,
+        use_llm: bool = False,
     ):
         engagement = _engagement(engagement_id)
         try:
@@ -413,6 +414,7 @@ def engagements_router() -> APIRouter:
                 kind=kind,
                 client_name=engagement.client_name,
                 unit=unit,
+                use_llm=use_llm,
             )
         except (FileNotFoundError, ValueError, RuntimeError) as exc:
             raise ApiError("ingest_failed", str(exc)) from exc
@@ -430,6 +432,7 @@ def engagements_router() -> APIRouter:
         path: Optional[str] = None,
         kind: Optional[str] = None,
         encoder: Optional[str] = None,
+        use_llm: bool = False,
     ):
         engagement = _engagement(engagement_id)
         try:
@@ -438,6 +441,7 @@ def engagements_router() -> APIRouter:
                 kind=kind,
                 client=engagement.client_code,
                 encoder_kind=encoder,
+                use_llm=use_llm,
             )
         except (FileNotFoundError, ValueError, RuntimeError) as exc:
             raise ApiError("ingest_failed", str(exc)) from exc

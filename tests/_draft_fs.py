@@ -51,8 +51,9 @@ def write_fs_pdf(
     basis: str = "Standalone",
     bs_rows: Sequence[Row] = (),
     pl_rows: Sequence[Row] = (),
+    notes_rows: Sequence[Row] = (),
 ) -> Path:
-    """Write a draft balance sheet + P&L to a PDF and return its path."""
+    """Write a draft balance sheet + P&L (and optional notes) to a PDF."""
     import pymupdf  # lazy: [report] extra
 
     path = Path(path)
@@ -64,6 +65,13 @@ def write_fs_pdf(
     if pl_rows:
         pages.append(
             ("Statement of Profit and Loss for the year ended 31 March 2026", pl_rows)
+        )
+    if notes_rows:
+        pages.append(
+            (
+                "Notes to the financial statements for the year ended 31 March 2026",
+                notes_rows,
+            )
         )
 
     document = pymupdf.open()

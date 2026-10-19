@@ -96,8 +96,9 @@ A browser client should always upload the file. The CLI is unaffected.
 
 Ingestion, mapping, reconciliation and review are deterministic. The embedding
 gate needs the `[mapping]` extra and degrades to dictionary-only when it is
-absent. The LLM layer is opt-in per request (`{"use_llm": true}`) and never runs
-in the reconciliation path.
+absent. The LLM layer is opt-in per request (`{"use_llm": true}` on `/map`, or
+`?use_llm=true` on `/ingest/fs` and `/fs/coverage`) and never runs in the
+reconciliation path.
 
 ---
 
@@ -124,6 +125,14 @@ POST   /api/exceptions/{id}/dispose                  explain or accept
 Side B is the **client's draft statements** by default. Analysing a published
 report is a separate opt-in feature and is not exposed here.
 
+A reviewer decision on a draft survives re-ingestion: on the next `/ingest/fs`
+the stored `manual` (and previously replayed `cache`) rows seed the mapping
+cache, matched on `(statement, normalised label)` for the client. A reset is
+stored as `method="reset"` and acts as a tombstone, so an older draft cannot
+resurrect the decision. Notes, equity and cash-flow rows are persisted for
+provenance as `measure="note_total"` and never enter Side B or the face review
+queue.
+
 `POST /materiality` is mandatory: reconciliation fails with `409
 materiality_unset` rather than inventing a threshold. `GET /materiality` returns
 the current value alongside a revenue-based suggestion for the UI to prefill;
@@ -145,8 +154,8 @@ reading aid, `openapi.json` is the source of truth.
 | engagements | `POST` | `/api/engagements` | 201 | `EngagementSummaryOut` | `CreateEngagementIn` |
 | engagements | `GET` | `/api/engagements/{engagement_id}` | 200 | `EngagementSummaryOut` | — |
 | ingest | `POST` | `/api/engagements/{engagement_id}/ingest/tb` | 201 | `TbIngestOut` | multipart `file` *(or `?path=`)* |
-| ingest | `POST` | `/api/engagements/{engagement_id}/ingest/fs` | 201 | `FsIngestOut` | multipart `file` *(or `?path=`)* |
-| ingest | `POST` | `/api/engagements/{engagement_id}/fs/coverage` | 200 | `FsCoverageOut` | multipart `file` *(or `?path=`)* |
+| ingest | `POST` | `/api/engagements/{engagement_id}/ingest/fs` | 201 | `FsIngestOut` | multipart `file` *(or `?path=`)*; `?use_llm=` |
+| ingest | `POST` | `/api/engagements/{engagement_id}/fs/coverage` | 200 | `FsCoverageOut` | multipart `file` *(or `?path=`)*; `?use_llm=` |
 | ingest | `GET` | `/api/engagements/{engagement_id}/documents` | 200 | `[DocumentOut]` | — |
 | ingest | `GET` | `/api/engagements/{engagement_id}/tb-lines` | 200 | `PageOut` | — |
 | mapping | `POST` | `/api/engagements/{engagement_id}/map` | 200 | `MappingSummaryOut` | `MapIn` |

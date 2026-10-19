@@ -5,12 +5,17 @@ Reuses the **same** layered cascade as trial-balance mapping
 A financial-statement presentation label is just another ledger-style head, so
 the cascade needs no changes.
 
-One extra layer runs **before** the cascade: a closed **group** dictionary
-(:mod:`auditiq.core.groups`). A face line that aggregates several FSLIs — today
-"Revenue from Operations" — resolves to a group code and is tied out as one unit
-instead of being forced onto an arbitrary member. Groups only ever apply to
-financial statements: on the trial-balance side a ledger head still maps to a
-single FSLI, which keeps the mapping cascade (and its parity guarantee) untouched.
+Two FS-specific layers wrap the cascade:
+
+* a reviewer-decision **cache** (seeded from the stored ``fs_line`` rows, exactly
+  like the trial-balance cache) and
+* a closed **group** dictionary (:mod:`auditiq.core.groups`).
+
+A face line that aggregates several FSLIs — today "Revenue from Operations" —
+resolves to a group code and is tied out as one unit instead of being forced onto
+an arbitrary member. Groups only ever apply to financial statements: on the
+trial-balance side a ledger head still maps to a single FSLI, which keeps the
+mapping cascade (and its parity guarantee) untouched.
 """
 from __future__ import annotations
 
@@ -22,10 +27,12 @@ from ...core.taxonomy import Taxonomy, load_default_taxonomy
 from ..prepare.aliases import AliasDictionary, load_alias
 from ..prepare.encoder import Encoder, default_encoder_kind, make_encoder
 from ..prepare.mapper import ALL_LAYERS, LedgerHead, MapResult, Mapper
+from ..prepare.normalize import nu
 from ..prepare.thresholds import Thresholds, load_thresholds
-from .base import FsRow
+from .base import CachedLabel, FsRow
 
 GROUP_LAYER = "group"
+CACHE_LAYER = "cache"
 
 
 @dataclass
@@ -69,10 +76,13 @@ def build_fs_mapper(
     encoder_kind: Optional[str] = None,
     thresholds: Optional[Thresholds] = None,
     alias: Optional[AliasDictionary] = None,
+    llm: Optional[object] = None,
 ) -> tuple[Mapper, Thresholds, str, bool]:
     """Build a mapper configured like the ledger cascade.
 
-    Returns ``(mapper, thresholds, encoder_kind, tuned)``.
+    ``llm`` is the same optional client used by trial-balance mapping; pass it
+    only when a run explicitly opts in. Returns ``(mapper, thresholds,
+    encoder_kind, tuned)``.
     """
     taxonomy = taxonomy or load_default_taxonomy()
     looked_up = thresholds is None
@@ -90,7 +100,7 @@ def build_fs_mapper(
         else None
     )
     alias = alias or load_alias(taxonomy=taxonomy)
-    mapper = Mapper(taxonomy, alias, encoder=encoder, cfg=thresholds)
+    mapper = Mapper(taxonomy, alias, encoder=encoder, llm=llm, cfg=thresholds)
     return mapper, thresholds, kind, tuned
 
 
@@ -105,15 +115,30 @@ def label_row(
     statement: str = "",
     client: str = "",
     groups: Optional[GroupIndex] = None,
+    cache: Optional[dict[tuple, CachedLabel]] = None,
+    layers=ALL_LAYERS,
 ) -> LabelledRow:
     """Resolve one face row to a group or FSLI.
 
-    The group dictionary is consulted first: a label that denotes a presentation
-    aggregate resolves to its group code, so it is never forced onto an arbitrary
-    member FSLI. Everything else goes through the cascade unchanged.
+    A reviewer decision replayed from the FS cache wins over everything else, then
+    the presentation-group dictionary is consulted, then the shared cascade. The
+    cache is keyed by ``(statement, nu(label))`` and is already scoped to the
+    client by :func:`auditiq.ingest.fs.review.load_fs_cache`.
     """
     if groups is None:
         groups = build_group_index()
+    if cache is not None and CACHE_LAYER in layers:
+        hit = cache.get((statement, nu(row.label)))
+        if hit is not None:
+            return LabelledRow(
+                row=row,
+                fsli_code=hit.fsli_code,
+                group_code=hit.group_code,
+                statement=statement,
+                layer=CACHE_LAYER,
+                confidence=1.0,
+            )
+
     group_code = groups.group_for(row.label)
     if group_code is not None:
         return LabelledRow(
@@ -126,7 +151,7 @@ def label_row(
         )
 
     head = LedgerHead(raw_name=row.label, group=statement, client=client)
-    result: MapResult = mapper.map(head)
+    result: MapResult = mapper.map(head, layers=layers)
     return LabelledRow(
         row=row,
         fsli_code=result.fsli_code,
@@ -141,7 +166,7 @@ def label_rows(
     mapper: Mapper,
     client: str = "",
     layers=ALL_LAYERS,
-    cache: Optional[dict] = None,
+    cache: Optional[dict[tuple, CachedLabel]] = None,
     groups: Optional[GroupIndex] = None,
 ) -> list[LabelledRow]:
     """Label every extracted row, deduplicating identical labels via a memo."""
@@ -151,29 +176,18 @@ def label_rows(
     labelled: list[LabelledRow] = []
     for statement, rows in rows_by_statement.items():
         for row in rows:
-            key = (statement, row.label.lower())
+            key = (statement, nu(row.label))
             hit = memo.get(key)
             if hit is None:
-                group_code = groups.group_for(row.label)
-                if group_code is not None:
-                    hit = LabelledRow(
-                        row=row,
-                        fsli_code=None,
-                        group_code=group_code,
-                        statement=statement,
-                        layer=GROUP_LAYER,
-                        confidence=1.0,
-                    )
-                else:
-                    head = LedgerHead(raw_name=row.label, group=statement, client=client)
-                    result = mapper.map(head, layers=layers, cache=cache)
-                    hit = LabelledRow(
-                        row=row,
-                        fsli_code=result.fsli_code,
-                        statement=statement,
-                        layer=result.layer,
-                        confidence=result.confidence,
-                    )
+                hit = label_row(
+                    row,
+                    mapper,
+                    statement=statement,
+                    client=client,
+                    groups=groups,
+                    cache=cache,
+                    layers=layers,
+                )
                 memo[key] = hit
             labelled.append(
                 LabelledRow(
@@ -201,6 +215,7 @@ def summarise(labelled: list[LabelledRow], encoder: str, tuned: bool) -> LabelSu
 
 
 __all__ = [
+    "CACHE_LAYER",
     "GROUP_LAYER",
     "LabelSummary",
     "LabelledRow",
