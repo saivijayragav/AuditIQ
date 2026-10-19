@@ -150,7 +150,6 @@ _STATUS_FOR_CODE = {
     "validation_failed": 422,
     "not_found": 404,
     "materiality_unset": 409,
-    "conflict": 409,
     "ingest_failed": 422,
     "schema_drift": 503,
     "internal_error": 500,

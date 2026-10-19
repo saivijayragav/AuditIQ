@@ -87,6 +87,15 @@ def test_error_envelope_shape(spec):
     assert "enum" in body["code"], "error codes must be a closed enumeration"
 
 
+def test_every_declared_error_code_is_reachable():
+    """No dead codes: the enum and the route handlers must agree."""
+    from auditiq.api.app import _STATUS_FOR_CODE
+    from auditiq.api.schemas import ErrorBody
+
+    declared = set(ErrorBody.model_fields["code"].annotation.__args__)
+    assert declared == set(_STATUS_FOR_CODE), "enum and status map drifted"
+
+
 def test_creation_routes_return_201(spec):
     for path, method in [
         ("/api/engagements", "post"),

@@ -66,8 +66,8 @@ routes — has exactly this shape:
 ```
 
 `code` is a closed set: `bad_request`, `validation_failed`, `not_found`,
-`materiality_unset`, `conflict`, `ingest_failed`, `schema_drift`,
-`internal_error`. Clients should branch on `code`, never on `message`.
+`materiality_unset`, `ingest_failed`, `schema_drift`, `internal_error`. Clients
+should branch on `code`, never on `message`.
 
 ### CORS
 
@@ -126,7 +126,9 @@ report is a separate opt-in feature and is not exposed here.
 
 `POST /materiality` is mandatory: reconciliation fails with `409
 materiality_unset` rather than inventing a threshold. `GET /materiality` returns
-the current value alongside a revenue-based suggestion for the UI to prefill.
+the current value alongside a revenue-based suggestion for the UI to prefill;
+the suggestion is `null` until a draft FS has been ingested, because there is
+nothing to base it on.
 
 ---
 
@@ -224,8 +226,13 @@ Two independent gates apply:
 * **Materiality / performance materiality** — controls severity and escalation
   (`watch` / `material`), never whether a unit is accepted.
 
-`status` is one of `tied`, `rounding residual`, `minor residual`,
-`watch residual`, `material variance`.
+`status` is one of `clean`, `minor residual`, `watch items`, `material
+differences`. `reconciled` is simply `material == 0` — watch and minor items do
+not fail the tie-out, they inform the reviewer.
+
+Reconciliation requires both sides to exist: a missing TB or draft FS is a `422`
+with an actionable message. Materiality is checked after that and yields `409
+materiality_unset`.
 
 ---
 

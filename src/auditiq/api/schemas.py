@@ -31,7 +31,6 @@ ErrorCode = Literal[
     "validation_failed",
     "not_found",
     "materiality_unset",
-    "conflict",
     "ingest_failed",
     "schema_drift",
     "internal_error",
