@@ -166,9 +166,12 @@ class ApiError(Exception):
         status: Optional[int] = None,
         details: Optional[dict] = None,
     ) -> None:
+        if code not in _STATUS_FOR_CODE:
+            # A typo would otherwise ship an out-of-enum code to clients.
+            raise ValueError(f"unknown API error code {code!r}")
         self.code = code
         self.message = message
-        self.status = status or _STATUS_FOR_CODE.get(code, 400)
+        self.status = status or _STATUS_FOR_CODE[code]
         self.details = details or {}
         super().__init__(message)
 
