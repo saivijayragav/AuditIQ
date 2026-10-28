@@ -216,6 +216,7 @@ def test_exceptions_dispose_invalid_status_errors(cli_env):
 
 
 def test_fs_coverage_cli(tmp_path):
+    pytest.importorskip('pymupdf')
     """`fs coverage` reports via the shared fs_coverage service helper."""
     from _draft_fs import schedule_iii_rows, write_fs_pdf
 
