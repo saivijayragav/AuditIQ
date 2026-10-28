@@ -82,7 +82,11 @@ from ..store.queries import (
     list_tb_lines,
     mapping_counts,
 )
+from ..analytics import run_analytics
+from ..gl import run_jet_file
+from ..gst import run_gst_recon_files
 from .schemas import (
+    AnalyticalReportOut,
     BulkResolveIn,
     BulkResolveOut,
     CreateEngagementIn,
@@ -99,8 +103,10 @@ from .schemas import (
     FsResolveIn,
     FsResolveOut,
     FsUnmappedOut,
+    GstReconReportOut,
     GroupOut,
     HealthOut,
+    JetReportOut,
     MapIn,
     MappingCountsOut,
     MappingSummaryOut,
@@ -746,6 +752,173 @@ def reference_router() -> APIRouter:
     def sources_route():
         return ErpSourcesOut(sources=sorted(ADAPTERS))
 
+    @router.get(
+        "/engagements/{engagement_id}/analytics",
+        response_model=AnalyticalReportOut,
+        summary="Run SA 520 analytical procedures and Schedule III ratio analysis",
+        tags=["analytics"],
+        responses=ERROR_RESPONSES,
+    )
+    def analytics_route(
+        engagement_id: int,
+        swing_threshold: float = Query(15.0, description="YoY swing threshold (%) for anomaly flag"),
+        material_swing: float = Query(25.0, description="YoY swing threshold (%) for material severity"),
+    ):
+        try:
+            return run_analytics(
+                engagement_id,
+                swing_threshold=swing_threshold,
+                material_swing=material_swing,
+            )
+        except ValueError as exc:
+            raise ApiError("not_found", str(exc))
+
+    @router.post(
+        "/jet/analyze",
+        response_model=JetReportOut,
+        summary="Run SA 240 Journal Entry Testing on uploaded Tally voucher export",
+        tags=["journal-entry-testing"],
+        responses=ERROR_RESPONSES,
+    )
+    async def jet_analyze_route(
+        file: UploadFile,
+    ):
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in (".xlsx", ".csv"):
+            raise ApiError("bad_request", f"Unsupported file type '{suffix}'; expected .xlsx or .csv")
+
+        content = await file.read()
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+
+        try:
+            report = run_jet_file(tmp_path)
+            return report.to_dict()
+        except Exception as exc:
+            raise ApiError("bad_request", str(exc))
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    @router.post(
+        "/gst/recon",
+        response_model=GstReconReportOut,
+        summary="Reconcile Books Purchase Register against GST Portal GSTR-2B",
+        tags=["gst-reconciliation"],
+        responses=ERROR_RESPONSES,
+    )
+    async def gst_recon_route(
+        books_file: UploadFile,
+        portal_file: UploadFile,
+        tolerance: float = Query(5.0, description="Round-off tolerance in INR"),
+    ):
+        books_suffix = Path(books_file.filename or "").suffix.lower()
+        portal_suffix = Path(portal_file.filename or "").suffix.lower()
+
+        if books_suffix not in (".xlsx", ".csv"):
+            raise ApiError("bad_request", f"Unsupported books file '{books_suffix}'; expected .xlsx or .csv")
+        if portal_suffix not in (".xlsx", ".csv", ".json"):
+            raise ApiError("bad_request", f"Unsupported portal file '{portal_suffix}'; expected .xlsx, .csv, or .json")
+
+        import tempfile
+
+        b_content = await books_file.read()
+        p_content = await portal_file.read()
+
+        with tempfile.NamedTemporaryFile(suffix=books_suffix, delete=False) as b_tmp:
+            b_tmp.write(b_content)
+            b_path = Path(b_tmp.name)
+
+        with tempfile.NamedTemporaryFile(suffix=portal_suffix, delete=False) as p_tmp:
+            p_tmp.write(p_content)
+            p_path = Path(p_tmp.name)
+
+        try:
+            report = run_gst_recon_files(b_path, p_path, tolerance=tolerance)
+            return report.to_dict()
+        except Exception as exc:
+            raise ApiError("bad_request", str(exc))
+        finally:
+            if b_path.exists():
+                b_path.unlink()
+            if p_path.exists():
+                p_path.unlink()
+
+    @router.post(
+        "/copilot/chat",
+        response_model=dict,
+        summary="Grounded Audit Copilot with Live Evidence Citations",
+        tags=["copilot"],
+    )
+    def copilot_chat_route(req: dict):
+        from ..copilot.service import handle_copilot_chat
+        session_id = req.get("session_id")
+        message = req.get("message", "")
+        res = handle_copilot_chat(session_id, message)
+        return res.model_dump()
+
+    @router.get(
+        "/copilot/session",
+        response_model=dict,
+        summary="Retrieve active copilot audit session and grounded rows",
+        tags=["copilot"],
+    )
+    def copilot_session_route(session_id: str = "demo-gst-fy23-24"):
+        from ..copilot.service import get_session
+        sess = get_session(session_id)
+        if not sess:
+            raise ApiError("not_found", "Session not found")
+        return sess.model_dump()
+
+    @router.post(
+        "/copilot/upload",
+        response_model=dict,
+        summary="Upload PDF or spreadsheet for real data extraction and grounded Q&A",
+        tags=["copilot"],
+    )
+    async def copilot_upload_route(
+        file: UploadFile,
+        session_id: Optional[str] = Query(None),
+    ):
+        from ..copilot.service import handle_document_upload
+        content = await file.read()
+        sess = handle_document_upload(content, file.filename or "uploaded_file", session_id)
+        return sess.model_dump()
+
+    @router.get(
+        "/copilot/records",
+        response_model=list,
+        summary="Retrieve SQL-extracted financial statement records for session",
+        tags=["copilot"],
+    )
+    def copilot_records_route(session_id: str = Query("demo-gst-fy23-24")):
+        from ..copilot.sql_store import get_records_by_session
+        return get_records_by_session(session_id)
+
+    @router.get(
+        "/copilot/raw-pdf",
+        summary="Stream raw PDF document for iframe visual rendering",
+        tags=["copilot"],
+    )
+    def copilot_raw_pdf_route(session_id: str = Query("demo-gst-fy23-24")):
+        from fastapi.responses import FileResponse
+        from ..copilot.service import get_pdf_path_for_session
+        pdf_path = get_pdf_path_for_session(session_id)
+        if not pdf_path or not pdf_path.exists():
+            raise ApiError("not_found", f"PDF document not found for session {session_id}")
+        return FileResponse(
+            path=str(pdf_path),
+            media_type="application/pdf",
+            filename=pdf_path.name,
+            headers={
+                "Content-Disposition": f'inline; filename="{pdf_path.name}"',
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
+
     return router
 
 
@@ -767,6 +940,8 @@ def create_app() -> FastAPI:
             {"name": "materiality", "description": "Engagement materiality."},
             {"name": "reconciliation", "description": "Side A vs Side B tie-out."},
             {"name": "exceptions", "description": "Escalations and dispositions."},
+            {"name": "analytics", "description": "SA 520 analytical procedures and Schedule III ratio analysis."},
+            {"name": "journal-entry-testing", "description": "SA 240 / ISA 240 Journal Entry Testing and fraud risk detection."},
             {"name": "reference", "description": "Taxonomy, groups and ERP sources."},
         ],
     )

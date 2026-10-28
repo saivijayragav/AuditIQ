@@ -8,18 +8,27 @@
 # Local run data (SQLite db, uploads, generated fixtures)
 # ==========================================
 /data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 
 # ==========================================
-# Secrets
+# Secrets & Environment Variables
 # ==========================================
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+ui/.env
+ui/.env.*
+!ui/.env.example
 
 # ==========================================
-# Python
+# Python & Virtual Environments
 # ==========================================
 __pycache__/
 *.py[cod]
@@ -35,21 +44,58 @@ ENV/
 *.egg
 
 # ==========================================
-# Tooling / editors / OS
+# Testing & Code Quality Tools
 # ==========================================
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage/
+htmlcov/
+*.coverage.*
+
+# ==========================================
+# IDEs & System Files
+# ==========================================
 .vscode/
 .idea/
 *.log
 .DS_Store
 Thumbs.db
+*.tmp
+*.temp
+*~
 
-# Scratch notes
+# ==========================================
+# Node / Next.js / TypeScript
+# ==========================================
+.next/
+ui/.next/
+node_modules/
+ui/node_modules/
+*.tsbuildinfo
+ui/tsconfig.tsbuildinfo
+ui/npm-debug.log*
+ui/yarn-debug.log*
+ui/yarn-error.log*
+ui/.pnpm-debug.log*
+
+# ==========================================
+# Scratch files & LLM evaluation artifacts
+# ==========================================
 TODO
-
-# Mapping artefacts written at the repo root (LLM response cache, tuned thresholds)
+scratch/
+test_dev.py
 llm_cache.json
 thresholds.json
-*.db
+thresholds_heldout.json
+results/
+results_heldout/
+results_heldout.zip
+
+# ==========================================
+# Agent Skills & Internal Design Documents
+# ==========================================
+.agents/
+DESIGN.md
+PRODUCT.md

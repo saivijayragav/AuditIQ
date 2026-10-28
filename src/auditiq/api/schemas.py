@@ -551,7 +551,139 @@ class RootOut(BaseModel):
     api: str
 
 
+# -- analytics -------------------------------------------------------------
+
+
+class RatioResultOut(_Out):
+    code: str
+    name: str
+    family: str
+    statutory: bool
+    unit: str
+    current: Optional[float] = None
+    prior: Optional[float] = None
+    change: Optional[float] = None
+    change_pct: Optional[float] = None
+    formula_desc: str
+
+
+class AnalyticalFindingOut(_Out):
+    ratio_code: str
+    ratio_name: str
+    family: str
+    severity: str
+    flag_type: str
+    message: str
+    current_value: Optional[float] = None
+    prior_value: Optional[float] = None
+    change_pct: Optional[float] = None
+    threshold: Optional[float] = None
+
+
+class AnalyticalReportOut(_Out):
+    engagement_id: int
+    client_code: str = ""
+    period: str
+    basis: str = ""
+    status: str
+    has_prior: bool
+    statutory_count: int
+    computed_count: int
+    flagged_count: int
+    ratios: list[RatioResultOut]
+    findings: list[AnalyticalFindingOut]
+
+
+# -- journal entry testing (SA 240) ----------------------------------------
+
+
+class JetFindingOut(_Out):
+    voucher_number: str
+    voucher_type: str
+    date: str
+    amount: float
+    risk_rule: str
+    severity: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class BenfordResultOut(_Out):
+    total_amounts: int
+    observed_pct: dict[int, float]
+    expected_pct: dict[int, float]
+    chi_square: float
+    is_conforming: bool
+    flagged_digits: list[int]
+
+
+class JetReportOut(_Out):
+    total_vouchers: int
+    total_lines: int
+    date_range: list[str]
+    voucher_type_counts: dict[str, int]
+    status: str
+    high_risk_count: int
+    medium_risk_count: int
+    low_risk_count: int
+    findings_count: int
+    findings: list[JetFindingOut]
+    benford: Optional[BenfordResultOut] = None
+
+
+class GstSummaryOut(_Out):
+    books_invoice_count: int
+    books_taxable_value: float
+    books_total_itc: float
+    portal_invoice_count: int
+    portal_taxable_value: float
+    portal_total_itc: float
+    exact_match_count: int
+    exact_match_itc: float
+    probable_match_count: int
+    probable_match_itc: float
+    value_mismatch_count: int
+    value_mismatch_tax_diff: float
+    books_only_count: int
+    books_only_itc: float
+    portal_only_count: int
+    portal_only_taxable: float
+    portal_only_itc: float
+    blocked_credit_count: int
+    blocked_credit_itc: float
+    itc_compliance_ratio: float
+
+
+class GstMatchRecordOut(_Out):
+    match_status: str
+    books_invoice: Optional[dict[str, Any]] = None
+    portal_invoice: Optional[dict[str, Any]] = None
+    taxable_difference: float
+    tax_difference: float
+    confidence_score: float
+    risk_level: str
+    audit_remark: str
+    statutory_reference: str
+
+
+class GstReconReportOut(_Out):
+    report_id: str
+    generated_at: str
+    tolerance: float
+    summary: GstSummaryOut
+    records: list[GstMatchRecordOut]
+
+
 __all__ = [
+    "AnalyticalFindingOut",
+    "AnalyticalReportOut",
+    "BenfordResultOut",
+    "GstMatchRecordOut",
+    "GstReconReportOut",
+    "GstSummaryOut",
+    "JetFindingOut",
+    "JetReportOut",
+    "RatioResultOut",
     "BulkResolveIn",
     "BulkResolveOut",
     "CreateEngagementIn",

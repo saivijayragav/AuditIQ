@@ -9,11 +9,16 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from ..settings import DATABASE_URL, ensure_dirs
+from .. import settings
+from ..settings import ensure_dirs
 from .models import Base
+
+DATABASE_URL: Optional[str] = None
 
 _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
+_engines: dict[str, Engine] = {}
+_session_factories: dict[str, sessionmaker] = {}
 _schema_checked: set[str] = set()
 
 
@@ -66,15 +71,15 @@ def check_schema(engine: Engine) -> None:
 def get_engine(url: Optional[str] = None, echo: bool = False) -> Engine:
     """Return a (cached) SQLAlchemy engine."""
     global _engine, _session_factory
-    if url is not None:
-        engine = create_engine(url, echo=echo, future=True)
-        _engine = engine
-        _session_factory = sessionmaker(bind=engine, future=True)
-        return engine
-    if _engine is None:
-        ensure_dirs()
-        _engine = create_engine(DATABASE_URL, echo=echo, future=True)
-        _session_factory = sessionmaker(bind=_engine, future=True)
+    key = url or DATABASE_URL or settings.DATABASE_URL
+    if key not in _engines:
+        if url is None:
+            ensure_dirs()
+        engine = create_engine(key, echo=echo, future=True)
+        _engines[key] = engine
+        _session_factories[key] = sessionmaker(bind=engine, future=True)
+    _engine = _engines[key]
+    _session_factory = _session_factories[key]
     return _engine
 
 
@@ -98,16 +103,24 @@ def reset_db(url: Optional[str] = None) -> Engine:
     Source files under ``data/uploads`` are left untouched. SQLite only.
     """
     global _engine, _session_factory
-    engine = get_engine(url)
+    key = url or DATABASE_URL or settings.DATABASE_URL
+    from sqlalchemy.orm import close_all_sessions
+
+    close_all_sessions()
+    engine = _engines.pop(key, None)
+    if engine is None:
+        engine = get_engine(url)
+        _engines.pop(key, None)
+    _session_factories.pop(key, None)
+    _engine = None
+    _session_factory = None
+
     if engine.dialect.name != "sqlite":
         raise RuntimeError(
             f"'store reset' only supports SQLite databases, not "
             f"'{engine.dialect.name}'. Drop the schema manually instead."
         )
     database = engine.url.database
-    key = str(engine.url)
-    _engine = None
-    _session_factory = None
     engine.dispose()
     if database and database != ":memory:":
         for suffix in ("", "-wal", "-shm"):
@@ -119,11 +132,10 @@ def reset_db(url: Optional[str] = None) -> Engine:
 @contextmanager
 def session_scope(url: Optional[str] = None) -> Iterator[Session]:
     """Transactional session context. Commits on success, rolls back on error."""
-    factory = _session_factory
-    if url is not None or factory is None:
+    key = url or DATABASE_URL or settings.DATABASE_URL
+    if key not in _session_factories:
         get_engine(url)
-        factory = _session_factory
-    assert factory is not None
+    factory = _session_factories[key]
     session = factory()
     try:
         yield session
