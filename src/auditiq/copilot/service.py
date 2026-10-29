@@ -24,11 +24,15 @@ from auditiq.copilot.models import (
     PdfBlock,
     PdfPage,
 )
+import logging
+logger = logging.getLogger(__name__)
+
 from auditiq.copilot.sql_store import (
     delete_records_by_session,
     get_records_by_session,
     init_sql_store,
     insert_record,
+    insert_records_bulk,
 )
 from auditiq.gst import run_gst_recon_files
 from auditiq.gl.service import run_jet_file
@@ -64,36 +68,108 @@ _SESSIONS: Dict[str, CopilotSession] = {}
 
 
 def _parse_amount(text: str) -> Tuple[float, float]:
-    """Extract current and prior amounts from text using Indian currency patterns."""
-    matches = re.findall(r"(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{2})?)", text, re.I)
+    """Extract current and prior amounts from text using Indian currency patterns and numbers."""
+    curr_matches = re.findall(
+        r"(?:INR|Rs\.?|₹|`)\s*([\d]{1,3}(?:,\d{2,3})*(?:\.\d+)?|\b\d+(?:\.\d+)?\b)",
+        text,
+        re.I,
+    )
+    if curr_matches:
+        amt1 = 0.0
+        amt2 = 0.0
+        try:
+            amt1 = float(curr_matches[0].replace(",", ""))
+        except Exception:
+            pass
+        if len(curr_matches) >= 2:
+            try:
+                amt2 = float(curr_matches[1].replace(",", ""))
+            except Exception:
+                pass
+        return amt1, amt2
+
+    num_matches = re.findall(r"\b(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2})\b", text)
     amt1 = 0.0
     amt2 = 0.0
-    if len(matches) >= 1:
+    if num_matches:
         try:
-            amt1 = float(matches[0].replace(",", ""))
+            amt1 = float(num_matches[0].replace(",", ""))
         except Exception:
             pass
-    if len(matches) >= 2:
-        try:
-            amt2 = float(matches[1].replace(",", ""))
-        except Exception:
-            pass
+        if len(num_matches) >= 2:
+            try:
+                amt2 = float(num_matches[1].replace(",", ""))
+            except Exception:
+                pass
     return amt1, amt2
 
 
 def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: str) -> ExtractedPdf:
-    """Extract real text and structured paragraphs from an uploaded PDF, and insert into SQL."""
-    reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-    page_count = len(reader.pages)
-    extracted_pages: List[PdfPage] = []
+    """Extract real text and structured paragraphs from an uploaded PDF, and insert into SQL.
 
+    Supports 400+ page enterprise reports via high-performance Google Chromium PDFium engine
+    (pypdfium2) with automatic fallback to pypdf with increased token limits.
+    """
+    page_texts: List[str] = []
+    page_count = 0
+
+    # 1. Primary extractor: pypdfium2 (C++ Google Chromium PDFium engine - fast, no token limits)
+    try:
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(io.BytesIO(file_bytes))
+        page_count = len(doc)
+        for page_idx in range(page_count):
+            try:
+                page = doc[page_idx]
+                textpage = page.get_textpage()
+                txt = textpage.get_text_range() or ""
+                page_texts.append(txt)
+            except Exception as page_err:
+                logger.warning(f"pypdfium2 page {page_idx+1} extract warning: {page_err}")
+                page_texts.append("")
+        doc.close()
+    except Exception as e:
+        logger.warning(f"pypdfium2 extraction failed, falling back to pypdf: {e}")
+        page_texts = []
+
+    # 2. Fallback extractor: pypdf with generous parsing budgets
+    if not page_texts:
+        try:
+            import pypdf
+            pypdf.overwrite_configuration(
+                stream_parsing_work_maximum_count=200_000_000,
+                stream_decoding_work_maximum_length=2_000_000_000,
+                maximum_declared_stream_length=1_000_000_000,
+                array_maximum_element_count=1_000_000,
+                dictionary_maximum_element_count=1_000_000,
+                array_based_stream_maximum_output_length=1_000_000_000,
+                xform_maximum_invocations_per_extraction=100_000,
+            )
+        except Exception:
+            pass
+
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes), strict=False)
+            page_count = len(reader.pages)
+            for page_idx, page in enumerate(reader.pages):
+                try:
+                    txt = page.extract_text() or ""
+                    page_texts.append(txt)
+                except Exception as page_err:
+                    logger.warning(f"pypdf page {page_idx+1} extract warning: {page_err}")
+                    page_texts.append("")
+        except Exception as e:
+            logger.error(f"Failed to read PDF with pypdf: {e}")
+            page_count = page_count or 1
+            page_texts = [""] * page_count
+
+    extracted_pages: List[PdfPage] = []
+    records_to_insert: List[Dict[str, Any]] = []
     current_section = "General / Overview"
 
-    for page_idx, page in enumerate(reader.pages):
-        raw_text = page.extract_text() or ""
+    for page_idx, raw_text in enumerate(page_texts):
         lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
         blocks: List[PdfBlock] = []
-
         current_para: List[str] = []
         block_counter = 1
 
@@ -110,21 +186,20 @@ def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: s
                     b_id = f"p{page_idx+1}-b{block_counter}"
                     blocks.append(PdfBlock(block_id=b_id, page_number=page_idx + 1, text=p_text, type="paragraph"))
 
-                    # Insert paragraph into SQL table
                     amt, prior = _parse_amount(p_text)
                     cat = "tax_itc" if "itc" in p_text.lower() or "gst" in p_text.lower() else "disclosure"
-                    insert_record(
-                        session_id=session_id,
-                        file_name=file_name,
-                        page_number=page_idx + 1,
-                        block_id=b_id,
-                        section=current_section,
-                        line_item=p_text[:40] + ("..." if len(p_text) > 40 else ""),
-                        amount=amt,
-                        prior_amount=prior,
-                        raw_text=p_text,
-                        category=cat,
-                    )
+                    records_to_insert.append({
+                        "session_id": session_id,
+                        "file_name": file_name,
+                        "page_number": page_idx + 1,
+                        "block_id": b_id,
+                        "section": current_section,
+                        "line_item": p_text[:40] + ("..." if len(p_text) > 40 else ""),
+                        "amount": amt,
+                        "prior_amount": prior,
+                        "raw_text": p_text,
+                        "category": cat,
+                    })
                     block_counter += 1
                     current_para = []
 
@@ -141,18 +216,18 @@ def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: s
 
                     amt, prior = _parse_amount(p_text)
                     cat = "tax_itc" if "itc" in p_text.lower() or "gst" in p_text.lower() else "disclosure"
-                    insert_record(
-                        session_id=session_id,
-                        file_name=file_name,
-                        page_number=page_idx + 1,
-                        block_id=b_id,
-                        section=current_section,
-                        line_item=p_text[:40] + ("..." if len(p_text) > 40 else ""),
-                        amount=amt,
-                        prior_amount=prior,
-                        raw_text=p_text,
-                        category=cat,
-                    )
+                    records_to_insert.append({
+                        "session_id": session_id,
+                        "file_name": file_name,
+                        "page_number": page_idx + 1,
+                        "block_id": b_id,
+                        "section": current_section,
+                        "line_item": p_text[:40] + ("..." if len(p_text) > 40 else ""),
+                        "amount": amt,
+                        "prior_amount": prior,
+                        "raw_text": p_text,
+                        "category": cat,
+                    })
                     block_counter += 1
                     current_para = []
 
@@ -163,18 +238,18 @@ def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: s
 
             amt, prior = _parse_amount(p_text)
             cat = "tax_itc" if "itc" in p_text.lower() or "gst" in p_text.lower() else "disclosure"
-            insert_record(
-                session_id=session_id,
-                file_name=file_name,
-                page_number=page_idx + 1,
-                block_id=b_id,
-                section=current_section,
-                line_item=p_text[:40] + ("..." if len(p_text) > 40 else ""),
-                amount=amt,
-                prior_amount=prior,
-                raw_text=p_text,
-                category=cat,
-            )
+            records_to_insert.append({
+                "session_id": session_id,
+                "file_name": file_name,
+                "page_number": page_idx + 1,
+                "block_id": b_id,
+                "section": current_section,
+                "line_item": p_text[:40] + ("..." if len(p_text) > 40 else ""),
+                "amount": amt,
+                "prior_amount": prior,
+                "raw_text": p_text,
+                "category": cat,
+            })
 
         extracted_pages.append(
             PdfPage(
@@ -183,6 +258,10 @@ def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: s
                 blocks=blocks,
             )
         )
+
+    # Bulk insert all extracted blocks into SQLite in a single transaction
+    if records_to_insert:
+        insert_records_bulk(records_to_insert)
 
     return ExtractedPdf(
         file_name=file_name,
