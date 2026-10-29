@@ -44,6 +44,36 @@ def ask_gemini_with_sql_context(
         )
     formatted_context = "\n".join(context_lines)
 
+    # 2b. If inquiry relates to YoY fluctuations, materiality, or anomalies, enrich context with SA 320/520 engine findings
+    lower_q = query.lower()
+    if any(k in lower_q for k in ("anomal", "fluctua", "variance", "swing", "last year", "prior year", "two year", "2 year", "compare", "drop", "spike", "sa 520", "sa-520", "sa 320", "materiali")):
+        try:
+            from auditiq.copilot.sql_store import get_records_by_session
+            from auditiq.copilot.anomalies import detect_horizontal_anomalies
+            all_recs = get_records_by_session(session_id)
+            
+            # Auto-detect auditor specified materiality benchmark in query (e.g. '20% materiality' or 'materiality set at 15%')
+            mat_match = re.search(r"(\d+(?:\.\d+)?)\s*%\s*(?:materiality|threshold|tolerance)", lower_q) or re.search(r"materiality\s*(?:of|at|set at|is|:)?\s*(\d+(?:\.\d+)?)\s*%", lower_q)
+            mat_pct = float(mat_match.group(1)) if mat_match else 30.0
+            watch_pct = max(5.0, round(mat_pct * 0.5, 1))
+
+            anom_report = detect_horizontal_anomalies(all_recs, critical_swing_pct=mat_pct, watch_swing_pct=watch_pct)
+            if anom_report.findings:
+                anom_lines = []
+                for a in anom_report.findings[:10]:
+                    anom_lines.append(
+                        f"- [CID: {a.id}] Page {a.page_number} | {a.line_item} (Section: {a.section}): "
+                        f"Current Year: INR {a.cy_amount:,.2f} vs Prior Year: INR {a.py_amount:,.2f} "
+                        f"(Variance: {a.variance:+,.2f}, Swing: {a.pct_change:+.1f}%) | "
+                        f"Classification: {a.anomaly_type} [{a.severity}] | Risk: {a.audit_risk}"
+                    )
+                formatted_context += (
+                    f"\n\nICAI SA 520 Grounded Year-on-Year Anomalies Detected:\n"
+                    + "\n".join(anom_lines)
+                )
+        except Exception as anom_err:
+            print("Anomaly enrichment error:", anom_err)
+
     system_prompt = (
         "You are an expert Chartered Accountant and Statutory Auditor reviewing a client's financial statements.\n"
         "You MUST answer the question using strictly the provided SQL-extracted financial records.\n"

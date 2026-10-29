@@ -898,6 +898,29 @@ def reference_router() -> APIRouter:
         return get_records_by_session(session_id)
 
     @router.get(
+        "/copilot/anomalies",
+        response_model=dict,
+        summary="ICAI SA 520 Horizontal Anomaly & Variance Analysis",
+        tags=["copilot"],
+    )
+    def copilot_anomalies_route(
+        session_id: str = Query("demo-gst-fy23-24"),
+        materiality_pct: float = Query(30.0, description="Auditor defined materiality percentage threshold"),
+        min_amount: float = Query(50.0, description="Auditor minimum material threshold floor"),
+    ):
+        from ..copilot.sql_store import get_records_by_session
+        from ..copilot.anomalies import detect_horizontal_anomalies
+        records = get_records_by_session(session_id)
+        watch_pct = max(5.0, round(materiality_pct * 0.5, 1))
+        report = detect_horizontal_anomalies(
+            records,
+            min_material_amount=min_amount,
+            critical_swing_pct=materiality_pct,
+            watch_swing_pct=watch_pct,
+        )
+        return jsonable_encoder(report.model_dump())
+
+    @router.get(
         "/copilot/raw-pdf",
         summary="Stream raw PDF document for iframe visual rendering",
         tags=["copilot"],
