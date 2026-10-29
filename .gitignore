@@ -94,8 +94,15 @@ results_heldout/
 results_heldout.zip
 
 # ==========================================
+# Large local sample PDFs in root (keep assets in ui/public)
+# ==========================================
+/*.pdf
+
+# ==========================================
 # Agent Skills & Internal Design Documents
 # ==========================================
 .agents/
+.impeccable/
 DESIGN.md
 PRODUCT.md
+

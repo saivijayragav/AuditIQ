@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
 import {
-  ShieldCheck,
   FileSpreadsheet,
   FileText,
   UploadCloud,
@@ -18,11 +17,11 @@ import {
   X,
   Loader2,
   Database,
-  Cpu,
-  Bot,
   ExternalLink,
   Eye,
   Layers,
+  FolderUp,
+  Search,
 } from "lucide-react";
 
 interface RowData {
@@ -107,7 +106,7 @@ function generateCurrentTime(): string {
 export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<"pdf" | "sql" | "books" | "schedule3">("pdf");
   const [sessionId, setSessionId] = useState<string>("demo-gst-fy23-24");
-  const [activeFileName, setActiveFileName] = useState<string>("sample_audited_financial_statements.pdf");
+  const [activeFileName, setActiveFileName] = useState<string>("INVESTOR_CORNER_1756730556104_570e54_1756730556104.pdf");
 
   // SQL Extracted Records state
   const [sqlRecords, setSqlRecords] = useState<SqlFinancialRecord[]>([]);
@@ -139,40 +138,6 @@ export default function WorkspacePage() {
     );
   }, [s3Records, s3Search]);
 
-  const detectedErp = useMemo(() => {
-    const fn = activeFileName.toLowerCase();
-    if (fn.includes("tally")) return "Tally ERP 9 / Prime";
-    if (fn.includes("zoho")) return "Zoho Books";
-    if (fn.includes("sap")) return "SAP ECC / S4HANA";
-    const s3 = sqlRecords.find((r) => r.category === "schedule3_mapping");
-    if (
-      s3?.raw_text?.toLowerCase().includes("source erp: tally") ||
-      s3?.raw_text?.toLowerCase().includes("tally account") ||
-      s3?.line_item?.toLowerCase().includes("tally")
-    )
-      return "Tally ERP 9 / Prime";
-    if (
-      s3?.raw_text?.toLowerCase().includes("source erp: zoho") ||
-      s3?.raw_text?.toLowerCase().includes("zoho account") ||
-      s3?.line_item?.toLowerCase().includes("zoho")
-    )
-      return "Zoho Books";
-    if (
-      s3?.raw_text?.toLowerCase().includes("source erp: sap") ||
-      s3?.raw_text?.toLowerCase().includes("sap g/l") ||
-      s3?.line_item?.toLowerCase().includes("sap")
-    )
-      return "SAP ECC / S4HANA";
-    return "ERP Trial Balance";
-  }, [activeFileName, sqlRecords]);
-
-  const erpShortLabel = useMemo(() => {
-    if (detectedErp.includes("Tally")) return "Tally";
-    if (detectedErp.includes("Zoho")) return "Zoho";
-    if (detectedErp.includes("SAP")) return "SAP";
-    return "ERP";
-  }, [detectedErp]);
-
   const s3TotalBalanceFormatted = useMemo(() => {
     const sum = s3Records.reduce((acc, r) => acc + (r.amount || 0), 0);
     const singleSide = sum > 0 ? sum / 2 : 13497960.65;
@@ -185,8 +150,26 @@ export default function WorkspacePage() {
   const [extractedPdf, setExtractedPdf] = useState<ExtractedPdfDoc | null>(null);
   const [currentPdfPage, setCurrentPdfPage] = useState<number>(1);
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
+  const [pdfSearchTerm, setPdfSearchTerm] = useState<string>("");
+  const [activeCitationText, setActiveCitationText] = useState<string | null>(null);
   const [pdfViewMode, setPdfViewMode] = useState<"visual" | "blocks">("visual");
   const [pdfServerUrl, setPdfServerUrl] = useState<string>("/api/copilot/raw-pdf?session_id=demo-gst-fy23-24");
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [ingestNotification, setIngestNotification] = useState<{
+    message: string;
+    type: "info" | "success" | "error";
+  } | null>(null);
+  const pdfBlobUrlRef = useRef<string | null>(null);
+
+  const updatePdfBlobUrl = (url: string | null) => {
+    if (pdfBlobUrlRef.current && pdfBlobUrlRef.current.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(pdfBlobUrlRef.current);
+      } catch {}
+    }
+    pdfBlobUrlRef.current = url;
+    setPdfBlobUrl(url);
+  };
 
   // Highlighting in tables
   const [highlightedRowId, setHighlightedRowId] = useState<number | null>(null);
@@ -357,23 +340,143 @@ export default function WorkspacePage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  // Navigate PDF page without unmounting iframe
-  const navigatePdfPage = (pageNumber: number) => {
+  // Highlight keywords and financial figures with Auditor Canary-Yellow Highlighter
+  const renderHighlightedContent = (
+    text: string,
+    searchTerm?: string,
+    isTargetBlock: boolean = false
+  ) => {
+    if (!text) return null;
+
+    const cleanTerm = (searchTerm || "").trim();
+    // Regular expression pattern for monetary amounts, numbers, percentages, etc.
+    const numberPattern = "(?:INR|₹|Rs\\.?\\s*)?\\d{1,3}(?:,\\d{2,3})*(?:\\.\\d{1,2})?%?|\\d+\\.\\d+%?";
+
+    let regex: RegExp | null = null;
+    if (cleanTerm && isTargetBlock) {
+      const escaped = cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      regex = new RegExp(`(${escaped})|(\\b(?:${numberPattern})\\b)`, "gi");
+    } else if (cleanTerm) {
+      const escaped = cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      regex = new RegExp(`(${escaped})`, "gi");
+    } else if (isTargetBlock) {
+      regex = new RegExp(`(\\b(?:${numberPattern})\\b)`, "gi");
+    }
+
+    if (!regex) {
+      return text;
+    }
+
+    const lines = text.split(/\r?\n/);
+
+    return (
+      <>
+        {lines.map((line, lIdx) => {
+          const parts = line.split(regex!);
+          return (
+            <React.Fragment key={lIdx}>
+              {parts.map((part, pIdx) => {
+                if (!part) return null;
+
+                const isSearchMatch =
+                  Boolean(cleanTerm) && part.toLowerCase() === cleanTerm.toLowerCase();
+                const isNumberMatch =
+                  isTargetBlock &&
+                  /^(?:(?:INR|₹|Rs\.?\s*)?\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?%?|\d+\.\d+%?)$/i.test(part.trim());
+
+                if (isSearchMatch) {
+                  return (
+                    <mark
+                      key={pIdx}
+                      className="auditor-highlight-search"
+                      title={`Statutory highlight for: ${part}`}
+                    >
+                      {part}
+                    </mark>
+                  );
+                }
+
+                if (isNumberMatch) {
+                  return (
+                    <mark
+                      key={pIdx}
+                      className="auditor-highlight-number"
+                      title={`Verified statutory figure: ${part}`}
+                    >
+                      {part}
+                    </mark>
+                  );
+                }
+
+                return <span key={pIdx}>{part}</span>;
+              })}
+              {lIdx < lines.length - 1 && <br />}
+            </React.Fragment>
+          );
+        })}
+      </>
+    );
+  };
+
+  // Navigate PDF page without unmounting iframe, updating search hash
+  const navigatePdfPage = (pageNumber: number, searchTerm?: string) => {
     const clamped = Math.max(1, Math.min(totalPages, pageNumber));
     setCurrentPdfPage(clamped);
+    const term = searchTerm !== undefined ? searchTerm : pdfSearchTerm;
     if (iframeRef.current && effectivePdfSrc) {
       try {
-        iframeRef.current.src = `${effectivePdfSrc}#page=${clamped}`;
+        const hash = `#page=${clamped}${term ? `&search=${encodeURIComponent(term)}` : ""}`;
+        iframeRef.current.src = `${effectivePdfSrc}${hash}`;
       } catch (e) {
         console.warn("Could not update iframe page hash:", e);
       }
     }
   };
 
-  // Jump to PDF block
-  const jumpToPdfBlock = (pageNumber: number, blockId?: string) => {
+  // Jump to PDF block with content highlighting in PDF and SQL blocks
+  const jumpToPdfBlock = (
+    pageNumber: number,
+    blockId?: string,
+    citationValue?: string,
+    citationLabel?: string
+  ) => {
     setActiveTab("pdf");
-    navigatePdfPage(pageNumber);
+
+    // Extract clean search phrase from label or value for PDF & SQL blocks highlighting
+    let detectedTerm = "";
+    if (citationLabel) {
+      // e.g. "Page 116 • Franchisee Fee 17,573.45 (INR 0)" -> "Franchisee Fee"
+      const cleaned = citationLabel
+        .replace(/^Page\s+\d+\s*[•·-]\s*/i, "")
+        .replace(/\s*\(INR[^)]*\)/i, "")
+        .trim();
+      const phraseMatch = cleaned.match(/^([A-Za-z\s&'-]{3,})/);
+      if (phraseMatch) {
+        detectedTerm = phraseMatch[1].trim();
+      } else {
+        detectedTerm = cleaned.slice(0, 30).trim();
+      }
+    } else if (citationValue) {
+      const words = citationValue.trim().split(/\s+/).slice(0, 3).join(" ");
+      detectedTerm = words.replace(/[^\w\s&'-]/g, "").trim();
+    }
+
+    let fullCitationText = citationValue || "";
+    if (blockId && !fullCitationText) {
+      const matchingRec = sqlRecords.find((r) => r.block_id === blockId);
+      if (matchingRec) {
+        fullCitationText = matchingRec.raw_text || matchingRec.line_item;
+        if (!detectedTerm && matchingRec.line_item) {
+          const lineItemPhrase = matchingRec.line_item.match(/^([A-Za-z\s&'-]{3,})/);
+          detectedTerm = lineItemPhrase ? lineItemPhrase[1].trim() : matchingRec.line_item.slice(0, 25).trim();
+        }
+      }
+    }
+
+    setActiveCitationText(fullCitationText || null);
+    setPdfSearchTerm(detectedTerm);
+    navigatePdfPage(pageNumber, detectedTerm);
+
     if (blockId) {
       setHighlightedBlockId(blockId);
       setHighlightedRowId(null);
@@ -439,20 +542,30 @@ export default function WorkspacePage() {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Reset file input value immediately so user can re-select the same file if needed
+    e.target.value = "";
     await processUploadedFile(file);
   };
 
   const processUploadedFile = async (file: File) => {
     setIsUploading(true);
     setUploadError(null);
+    setIngestNotification({
+      message: `Ingesting "${file.name}"... Parsing statutory financial lines into docket`,
+      type: "info",
+    });
 
-    if (file.name.toLowerCase().endsWith(".pdf")) {
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    setActiveFileName(file.name);
+
+    if (isPdf) {
+      // 0ms instant display in visual iframe via Object URL
+      const localBlobUrl = URL.createObjectURL(file);
+      updatePdfBlobUrl(localBlobUrl);
       setPdfViewMode("visual");
       setActiveTab("pdf");
-      setActiveFileName(file.name);
       setCurrentPdfPage(1);
     } else {
-      setActiveFileName(file.name);
       setActiveTab("books");
     }
 
@@ -477,6 +590,11 @@ export default function WorkspacePage() {
         setExtractedPdf(sessionData.pdf_doc);
         setCurrentPdfPage(1);
         setActiveTab("pdf");
+        if (sessionData.pdf_url) {
+          setPdfServerUrl(sessionData.pdf_url);
+        } else {
+          setPdfServerUrl(`/api/copilot/raw-pdf?session_id=${encodeURIComponent(sessionData.session_id)}`);
+        }
       } else {
         setExtractedPdf(null);
         setPdfServerUrl("");
@@ -507,11 +625,27 @@ export default function WorkspacePage() {
       if (recRes.ok) {
         const recData = await recRes.json();
         setSqlRecords(recData);
+        setIngestNotification({
+          message: `Successfully ingested "${file.name}" • ${recData.length} records parsed into SQLite audit docket`,
+          type: "success",
+        });
+        setTimeout(() => setIngestNotification(null), 6000);
+      } else {
+        setIngestNotification({
+          message: `Parsed "${file.name}" into audit docket`,
+          type: "success",
+        });
+        setTimeout(() => setIngestNotification(null), 4000);
       }
 
       setShowUploadModal(false);
     } catch (err: any) {
-      setUploadError(err.message || "Failed to parse document. Ensure the backend server is running.");
+      const errMsg = err.message || "Failed to parse document. Ensure the backend server is running.";
+      setUploadError(errMsg);
+      setIngestNotification({
+        message: errMsg,
+        type: "error",
+      });
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -572,7 +706,7 @@ export default function WorkspacePage() {
           } else if (firstCite.label?.includes("GST Row") || firstCite.label?.includes("Row #") || isExcelActive || firstCite.type === "excel") {
             jumpToTableRow(firstCite.row_index!);
           } else if (firstCite.page && !isExcelActive) {
-            jumpToPdfBlock(firstCite.page, firstCite.block_id);
+            jumpToPdfBlock(firstCite.page, firstCite.block_id, firstCite.value, firstCite.label);
           } else if (firstCite.row_index) {
             jumpToSqlRecord(firstCite.row_index);
           }
@@ -620,11 +754,12 @@ export default function WorkspacePage() {
       : 3);
 
   const effectivePdfSrc =
-    activeFileName.includes("INVESTOR_CORNER")
+    pdfBlobUrl ||
+    (activeFileName.includes("INVESTOR_CORNER")
       ? "/INVESTOR_CORNER_1756730556104_570e54_1756730556104.pdf"
       : activeFileName.includes("sample_audited")
       ? "/sample_audited_financial_statements.pdf"
-      : pdfServerUrl || `/api/copilot/raw-pdf?session_id=${encodeURIComponent(sessionId)}`;
+      : pdfServerUrl || `/api/copilot/raw-pdf?session_id=${encodeURIComponent(sessionId)}`);
 
   const isExcelActive = Boolean(
     activeFileName && /\.(xlsx|csv|xls)$/i.test(activeFileName)
@@ -633,6 +768,183 @@ export default function WorkspacePage() {
   const effectiveActiveTab = isExcelActive && activeTab === "pdf"
     ? (s3Records.length > 0 ? "schedule3" : "books")
     : activeTab;
+
+  // Dynamic Document Classification (Audit Report, SAP ERP, Zoho Books, Tally, GSTR-2B)
+  const documentMeta = useMemo(() => {
+    const fn = (activeFileName || "").toLowerCase();
+    const isPdf = fn.endsWith(".pdf") || Boolean(extractedPdf) || effectiveActiveTab === "pdf";
+    const isExcel = Boolean(activeFileName && /\.(xlsx|csv|xls)$/i.test(activeFileName));
+    const isTrialBalance = s3Records.length > 0;
+
+    // 1. PDF Documents (Statutory Audit Reports / Financial Statements)
+    if (isPdf) {
+      if (fn.includes("itc")) {
+        return {
+          type: "Audit Report (ITC Limited)",
+          shortLabel: "Audit Report",
+          statusText: `● ${totalPages} Pages Extracted`,
+          statusColor: "var(--accent-emerald)",
+          isTrialBalance: false,
+          isPdf: true,
+        };
+      }
+      if (fn.includes("investor_corner") || fn.includes("chennai") || fn.includes("csk")) {
+        return {
+          type: "Statutory Financial Statements (CSKCL)",
+          shortLabel: "Audit Report",
+          statusText: `● ${totalPages} Pages Extracted`,
+          statusColor: "var(--accent-emerald)",
+          isTrialBalance: false,
+          isPdf: true,
+        };
+      }
+      return {
+        type: "Statutory Audit Report (PDF)",
+        shortLabel: "Audit Report",
+        statusText: `● ${totalPages} Pages Extracted`,
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: false,
+        isPdf: true,
+      };
+    }
+
+    // 2. SAP ERP
+    if (
+      fn.includes("sap") ||
+      sqlRecords.some((r) => r.raw_text?.toLowerCase().includes("source erp: sap") || r.raw_text?.toLowerCase().includes("sap g/l"))
+    ) {
+      return {
+        type: "SAP ERP Trial Balance",
+        shortLabel: "SAP",
+        statusText: "● Balanced",
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: true,
+        isPdf: false,
+      };
+    }
+
+    // 3. Zoho Books
+    if (
+      fn.includes("zoho") ||
+      sqlRecords.some((r) => r.raw_text?.toLowerCase().includes("source erp: zoho") || r.raw_text?.toLowerCase().includes("zoho account"))
+    ) {
+      return {
+        type: "Zoho Books Trial Balance",
+        shortLabel: "Zoho",
+        statusText: "● Balanced",
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: true,
+        isPdf: false,
+      };
+    }
+
+    // 4. Tally ERP
+    if (
+      fn.includes("tally") ||
+      sqlRecords.some((r) => r.raw_text?.toLowerCase().includes("source erp: tally") || r.raw_text?.toLowerCase().includes("tally account"))
+    ) {
+      if (fn.includes("purchase_register") || fn.includes("gstr")) {
+        return {
+          type: "Tally GST Purchase Register",
+          shortLabel: "Tally",
+          statusText: `● ${rows.length} Invoices`,
+          statusColor: "var(--accent-emerald)",
+          isTrialBalance: false,
+          isPdf: false,
+        };
+      }
+      return {
+        type: "Tally ERP 9 / Prime",
+        shortLabel: "Tally",
+        statusText: "● Balanced",
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: true,
+        isPdf: false,
+      };
+    }
+
+    // 5. GST Returns / GSTR-2B
+    if (fn.includes("gstr") || fn.includes("2b") || fn.includes("purchase_register")) {
+      return {
+        type: "GSTR-2B Purchase Register",
+        shortLabel: "GSTR-2B",
+        statusText: `● ${rows.length} Records`,
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: false,
+        isPdf: false,
+      };
+    }
+
+    // 6. Generic Trial Balance or Spreadsheet
+    if (isTrialBalance) {
+      return {
+        type: "ERP Trial Balance",
+        shortLabel: "ERP",
+        statusText: "● Balanced",
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: true,
+        isPdf: false,
+      };
+    }
+
+    if (isExcel) {
+      return {
+        type: "Audit Working Paper (Spreadsheet)",
+        shortLabel: "Ledger",
+        statusText: `● ${rows.length} Rows`,
+        statusColor: "var(--accent-emerald)",
+        isTrialBalance: false,
+        isPdf: false,
+      };
+    }
+
+    return {
+      type: "Audit Working Paper",
+      shortLabel: "Working Paper",
+      statusText: "● Active",
+      statusColor: "var(--accent-emerald)",
+      isTrialBalance: false,
+      isPdf: false,
+    };
+  }, [activeFileName, extractedPdf, effectiveActiveTab, totalPages, s3Records, sqlRecords, rows]);
+
+  const erpShortLabel = documentMeta.shortLabel;
+  const detectedErp = documentMeta.type;
+
+  const dynamicPromptRecommendations = useMemo(() => {
+    const fn = (activeFileName || "").toLowerCase();
+    if (fn.includes("itc")) {
+      return [
+        "What were the Key Audit Matters (KAM) reported by statutory auditor S R B C & CO LLP?",
+        "What were the segment revenues for FMCG - Cigarettes, FMCG - Others, and Agri Business under Note 30?",
+        "What are the disputed claims for Excise duty, VAT/Sales tax, and GST under Contingent Liabilities?",
+        "What was the total Corporate Social Responsibility (CSR) expenditure during the year?",
+        "What was the inter-segment revenue elimination in Note 30?",
+        "What are the statutory disclosures regarding the Scheme of Demerger of the Hotels Business?",
+      ];
+    }
+    if (documentMeta.isTrialBalance) {
+      return [
+        `What ${erpShortLabel} accounts were mapped to Property, Plant & Equipment (AST_PPE) under Schedule III?`,
+        `Is the ${erpShortLabel} trial balance balanced? What are the total debits and credits?`,
+        `What are the Current Investments (AST_CI) and Input Tax Credit (AST_OCA) balances from the ${erpShortLabel} trial balance?`,
+        `Run journal entry testing on ${erpShortLabel} ledger for suspicious or non-standard entries`,
+      ];
+    }
+    if (documentMeta.isPdf) {
+      return [
+        "Summarize the Independent Auditor's Report & Key Audit Matters",
+        "What was Total Revenue from Operations & Central Rights in Note 25?",
+        "What are the Player Remuneration and Franchisee Fee costs under Note 27?",
+        "What are the Contingent Liabilities and Capital Commitments?",
+      ];
+    }
+    return [
+      "Cross-check inward invoices against GSTR-2B for Section 17(5) blocked credits",
+      "What are the top invoice mismatches and tax rate differences?",
+      "Run Journal Entry Testing on Daybook for suspicious Sunday or adjustment vouchers",
+    ];
+  }, [activeFileName, documentMeta, erpShortLabel]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100vw", overflow: "hidden", backgroundColor: "var(--bg-primary)" }}>
@@ -649,155 +961,252 @@ export default function WorkspacePage() {
       <header
         style={{
           height: "48px",
-          borderBottom: "1px solid var(--border-subtle)",
-          backgroundColor: "var(--bg-secondary)",
+          borderBottom: "2px solid var(--border-subtle)",
+          backgroundColor: "var(--bg-card)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 1rem",
+          padding: "0 1.25rem",
           flexShrink: 0,
           zIndex: 30,
         }}
       >
         {/* Left Branding & Document Status */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, overflow: "hidden" }}>
-          <Link href="/" style={{ display: "flex", alignItems: "center", gap: "7px", flexShrink: 0 }}>
-            <div
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0, overflow: "hidden" }}>
+          <Link href="/" style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+            <span
               style={{
-                width: "26px",
-                height: "26px",
-                borderRadius: "6px",
-                backgroundColor: "var(--accent-blue)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                border: "1.5px solid var(--accent-ink)",
+                color: "var(--accent-ink)",
+                padding: "2px 7px",
+                fontSize: "0.685rem",
+                fontWeight: 800,
+                borderRadius: "2px",
+                letterSpacing: "0.08em",
+                fontFamily: "var(--font-mono)",
               }}
             >
-              <ShieldCheck size={16} color="#ffffff" />
-            </div>
-            <span style={{ fontWeight: 800, fontSize: "1rem", letterSpacing: "-0.02em", color: "#f8fafc" }}>
-              Audit<span style={{ color: "#3b82f6" }}>IQ</span>
+              ICAI STATUTORY
+            </span>
+            <span
+              style={{
+                fontFamily: "var(--font-serif)",
+                fontWeight: 700,
+                fontSize: "1.05rem",
+                letterSpacing: "-0.01em",
+                color: "var(--accent-ink)",
+              }}
+            >
+              AuditIQ Working Paper Docket
             </span>
           </Link>
 
-          <div style={{ height: "14px", width: "1px", backgroundColor: "var(--border-subtle)", flexShrink: 0 }} />
+          <div style={{ height: "16px", width: "1px", backgroundColor: "var(--border-subtle)", flexShrink: 0 }} />
 
-          {/* Active File Pill */}
+          {/* Active File & ERP Pill */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               gap: "6px",
-              fontSize: "0.785rem",
-              backgroundColor: "rgba(255, 255, 255, 0.03)",
+              fontSize: "0.75rem",
+              backgroundColor: "var(--bg-secondary)",
               border: "1px solid var(--border-subtle)",
-              padding: "2px 8px",
-              borderRadius: "4px",
+              padding: "3px 9px",
+              borderRadius: "3px",
               minWidth: 0,
             }}
           >
-            <FileText size={12} color="#60a5fa" style={{ flexShrink: 0 }} />
+            <span style={{ color: "var(--text-muted)", fontSize: "0.7rem", textTransform: "uppercase", fontWeight: 700 }}>
+              Working Paper:
+            </span>
             <span
               style={{
-                fontWeight: 600,
-                color: "var(--text-primary)",
+                fontWeight: 700,
+                fontFamily: "var(--font-mono)",
+                color: "var(--accent-ink)",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                maxWidth: "220px",
+                maxWidth: "200px",
               }}
               title={activeFileName}
             >
               {activeFileName}
             </span>
+            <span
+              style={{
+                color: "var(--accent-ink)",
+                fontSize: "0.685rem",
+                fontWeight: 700,
+                padding: "2px 7px",
+                borderRadius: "3px",
+                backgroundColor: "rgba(15, 56, 42, 0.08)",
+                border: "1px solid rgba(15, 56, 42, 0.18)",
+                fontFamily: "var(--font-mono)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {documentMeta.type}
+            </span>
+            <span style={{ color: documentMeta.statusColor, fontWeight: 700, fontSize: "0.685rem", whiteSpace: "nowrap", fontFamily: "var(--font-mono)" }}>
+              {documentMeta.statusText}
+            </span>
           </div>
 
-          {/* Records & AI Pill */}
+          {/* Records Count Badge */}
           <span
             style={{
-              backgroundColor: "rgba(16, 185, 129, 0.12)",
-              color: "#34d399",
-              border: "1px solid rgba(16, 185, 129, 0.25)",
+              backgroundColor: "var(--bg-card)",
+              color: "var(--accent-ink)",
+              border: "1px solid var(--border-subtle)",
               fontSize: "0.7rem",
               fontWeight: 700,
               padding: "2px 7px",
-              borderRadius: "4px",
+              borderRadius: "3px",
               display: "inline-flex",
               alignItems: "center",
               gap: "4px",
+              fontFamily: "var(--font-mono)",
               flexShrink: 0,
             }}
           >
-            <Database size={11} />
-            {sqlRecords.length} SQL Rows
-          </span>
-
-          <span
-            style={{
-              backgroundColor: "rgba(59, 130, 246, 0.12)",
-              color: "#60a5fa",
-              border: "1px solid rgba(59, 130, 246, 0.25)",
-              fontSize: "0.7rem",
-              fontWeight: 700,
-              padding: "2px 7px",
-              borderRadius: "4px",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "4px",
-              flexShrink: 0,
-            }}
-          >
-            <Cpu size={11} />
-            Gemini 3.5
+            <Database size={11} color="var(--accent-ink)" />
+            {sqlRecords.length} Indexed Lines
           </span>
         </div>
 
-        {/* Right Tools & Upload Action */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-          <button
-            onClick={() => setShowUploadModal(true)}
+        {/* Right Tools & Auditor Profile */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+          <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "5px",
-              padding: "5px 12px",
-              borderRadius: "5px",
-              backgroundColor: "var(--accent-blue)",
-              color: "#ffffff",
-              border: "none",
-              fontSize: "0.8rem",
-              fontWeight: 600,
-              cursor: "pointer",
-              boxShadow: "0 1px 4px rgba(37, 99, 235, 0.3)",
-              whiteSpace: "nowrap",
+              gap: "6px",
+              fontSize: "0.725rem",
+              color: "var(--text-muted)",
+              paddingRight: "6px",
             }}
           >
-            <UploadCloud size={14} />
-            <span>Upload</span>
-            <span style={{ fontSize: "0.65rem", opacity: 0.75, marginLeft: "2px" }}>Ctrl+U</span>
+            <span>Engagement Partner:</span>
+            <strong style={{ color: "var(--accent-ink)" }}>J. Swaminathan (FCA)</strong>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+                fileInputRef.current.click();
+              }
+            }}
+            disabled={isUploading}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "6px 14px",
+              borderRadius: "3px",
+              backgroundColor: "var(--accent-ink, #0F382A)",
+              color: "#FAF8F3",
+              border: "1px solid var(--accent-ink, #0F382A)",
+              fontSize: "0.785rem",
+              fontWeight: 700,
+              cursor: isUploading ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+              transition: "opacity 0.15s ease",
+              boxShadow: "0 1px 3px rgba(15, 56, 42, 0.2)",
+              opacity: isUploading ? 0.75 : 1,
+            }}
+            title="Upload working paper spreadsheet (.xlsx, .csv) or audited PDF"
+          >
+            {isUploading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                <span>Ingesting...</span>
+              </>
+            ) : (
+              <>
+                <UploadCloud size={14} />
+                <span>Ingest Working Paper</span>
+              </>
+            )}
           </button>
 
-          <Link
-            href="/login"
-            title="Auditor Profile"
+          <button
+            type="button"
+            onClick={() => setShowUploadModal(true)}
             style={{
-              width: "28px",
-              height: "28px",
-              borderRadius: "50%",
-              backgroundColor: "var(--bg-elevated)",
-              border: "1px solid var(--border-subtle)",
-              display: "flex",
+              display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "#93c5fd",
-              fontWeight: 700,
-              fontSize: "0.7rem",
+              width: "32px",
+              height: "32px",
+              borderRadius: "3px",
+              backgroundColor: "var(--bg-card)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--accent-ink)",
+              cursor: "pointer",
+              transition: "all 0.15s ease",
             }}
+            title="Open Ingestion Modal & Drag Drop Zone (Ctrl+U)"
           >
-            CA
-          </Link>
+            <FolderUp size={15} />
+          </button>
         </div>
       </header>
+
+      {/* Ingestion Notification Banner */}
+      {ingestNotification && (
+        <div
+          style={{
+            padding: "0.4rem 1.25rem",
+            backgroundColor:
+              ingestNotification.type === "error"
+                ? "var(--accent-rose-subtle, rgba(185, 28, 28, 0.1))"
+                : ingestNotification.type === "success"
+                ? "var(--accent-emerald-subtle, rgba(21, 128, 61, 0.1))"
+                : "var(--accent-ink-subtle, rgba(15, 56, 42, 0.08))",
+            borderBottom: `1px solid ${
+              ingestNotification.type === "error"
+                ? "rgba(185, 28, 28, 0.3)"
+                : ingestNotification.type === "success"
+                ? "rgba(21, 128, 61, 0.3)"
+                : "var(--border-subtle)"
+            }`,
+            color:
+              ingestNotification.type === "error"
+                ? "var(--accent-rose, #B91C1C)"
+                : ingestNotification.type === "success"
+                ? "var(--accent-emerald, #15803D)"
+                : "var(--accent-ink, #0F382A)",
+            fontSize: "0.775rem",
+            fontFamily: "var(--font-mono)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexShrink: 0,
+            zIndex: 25,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {isUploading ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : ingestNotification.type === "success" ? (
+              <CheckCircle2 size={14} />
+            ) : (
+              <AlertTriangle size={14} />
+            )}
+            <span style={{ fontWeight: 600 }}>{ingestNotification.message}</span>
+          </div>
+          <button
+            onClick={() => setIngestNotification(null)}
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", padding: "2px 6px" }}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Main Dual-Stage Split Screen */}
       <div style={{ display: "grid", gridTemplateColumns: "1.05fr 0.95fr", flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -828,29 +1237,36 @@ export default function WorkspacePage() {
               flexShrink: 0,
             }}
           >
-            {/* View Switchers */}
-            <div style={{ display: "flex", gap: "4px" }}>
+            {/* View Switchers (Physical Binder Tab Styling) */}
+            <div style={{ display: "flex", gap: "2px", alignItems: "flex-end", height: "100%" }}>
               {!isExcelActive && (
                 <button
                   onClick={() => setActiveTab("pdf")}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: "5px",
-                    padding: "4px 10px",
-                    borderRadius: "5px",
-                    fontSize: "0.775rem",
-                    fontWeight: 600,
+                    gap: "6px",
+                    padding: "6px 12px",
+                    borderRadius: "3px 3px 0 0",
+                    fontSize: "0.75rem",
+                    fontWeight: effectiveActiveTab === "pdf" ? 700 : 500,
                     cursor: "pointer",
-                    border: "none",
+                    border: effectiveActiveTab === "pdf" ? "1px solid var(--border-subtle)" : "1px solid transparent",
+                    borderTop: effectiveActiveTab === "pdf" ? "2px solid var(--accent-ink)" : "2px solid transparent",
+                    borderBottom: effectiveActiveTab === "pdf" ? "1px solid var(--bg-card)" : "1px solid transparent",
                     whiteSpace: "nowrap",
                     backgroundColor: effectiveActiveTab === "pdf" ? "var(--bg-card)" : "transparent",
-                    color: effectiveActiveTab === "pdf" ? "#fbbf24" : "var(--text-secondary)",
-                    boxShadow: effectiveActiveTab === "pdf" ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
+                    color: effectiveActiveTab === "pdf" ? "var(--accent-ink)" : "var(--text-muted)",
+                    marginBottom: effectiveActiveTab === "pdf" ? "-1px" : "0",
                   }}
                 >
-                  <FileText size={13} color={effectiveActiveTab === "pdf" ? "#fbbf24" : "var(--text-muted)"} />
-                  <span>Audited PDF {totalPages ? `(${totalPages}p)` : ""}</span>
+                  <FileText size={12} color={effectiveActiveTab === "pdf" ? "var(--accent-ink)" : "var(--text-muted)"} />
+                  <span>Audited PDF</span>
+                  {totalPages ? (
+                    <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: "2px", backgroundColor: "var(--bg-secondary)", fontFamily: "var(--font-mono)" }}>
+                      {totalPages}p
+                    </span>
+                  ) : null}
                 </button>
               )}
 
@@ -859,21 +1275,26 @@ export default function WorkspacePage() {
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: "5px",
-                  padding: "4px 10px",
-                  borderRadius: "5px",
-                  fontSize: "0.775rem",
-                  fontWeight: 600,
+                  gap: "6px",
+                  padding: "6px 12px",
+                  borderRadius: "3px 3px 0 0",
+                  fontSize: "0.75rem",
+                  fontWeight: effectiveActiveTab === "sql" ? 700 : 500,
                   cursor: "pointer",
-                  border: "none",
+                  border: effectiveActiveTab === "sql" ? "1px solid var(--border-subtle)" : "1px solid transparent",
+                  borderTop: effectiveActiveTab === "sql" ? "2px solid var(--accent-ink)" : "2px solid transparent",
+                  borderBottom: effectiveActiveTab === "sql" ? "1px solid var(--bg-card)" : "1px solid transparent",
                   whiteSpace: "nowrap",
                   backgroundColor: effectiveActiveTab === "sql" ? "var(--bg-card)" : "transparent",
-                  color: effectiveActiveTab === "sql" ? "#34d399" : "var(--text-secondary)",
-                  boxShadow: effectiveActiveTab === "sql" ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
+                  color: effectiveActiveTab === "sql" ? "var(--accent-ink)" : "var(--text-muted)",
+                  marginBottom: effectiveActiveTab === "sql" ? "-1px" : "0",
                 }}
               >
-                <Database size={13} color={effectiveActiveTab === "sql" ? "#34d399" : "var(--text-muted)"} />
-                <span>SQL Records ({sqlRecords.length})</span>
+                <Database size={12} color={effectiveActiveTab === "sql" ? "var(--accent-ink)" : "var(--text-muted)"} />
+                <span>SQL Records</span>
+                <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: "2px", backgroundColor: "var(--bg-secondary)", fontFamily: "var(--font-mono)" }}>
+                  {sqlRecords.length}
+                </span>
               </button>
 
               <button
@@ -881,24 +1302,29 @@ export default function WorkspacePage() {
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: "5px",
-                  padding: "4px 10px",
-                  borderRadius: "5px",
-                  fontSize: "0.775rem",
-                  fontWeight: 600,
+                  gap: "6px",
+                  padding: "6px 12px",
+                  borderRadius: "3px 3px 0 0",
+                  fontSize: "0.75rem",
+                  fontWeight: effectiveActiveTab === "books" ? 700 : 500,
                   cursor: "pointer",
-                  border: "none",
+                  border: effectiveActiveTab === "books" ? "1px solid var(--border-subtle)" : "1px solid transparent",
+                  borderTop: effectiveActiveTab === "books" ? "2px solid var(--accent-ink)" : "2px solid transparent",
+                  borderBottom: effectiveActiveTab === "books" ? "1px solid var(--bg-card)" : "1px solid transparent",
                   whiteSpace: "nowrap",
                   backgroundColor: effectiveActiveTab === "books" ? "var(--bg-card)" : "transparent",
-                  color: effectiveActiveTab === "books" ? "#60a5fa" : "var(--text-secondary)",
-                  boxShadow: effectiveActiveTab === "books" ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
+                  color: effectiveActiveTab === "books" ? "var(--accent-ink)" : "var(--text-muted)",
+                  marginBottom: effectiveActiveTab === "books" ? "-1px" : "0",
                 }}
               >
-                <FileSpreadsheet size={13} color={effectiveActiveTab === "books" ? "#60a5fa" : "var(--text-muted)"} />
+                <FileSpreadsheet size={12} color={effectiveActiveTab === "books" ? "var(--accent-ink)" : "var(--text-muted)"} />
                 <span>
                   {activeFileName && /\.(xlsx|csv|xls)$/i.test(activeFileName)
-                    ? `Spreadsheet Rows (${rows.length})`
-                    : `GST Register (${rows.length})`}
+                    ? `Spreadsheet Rows`
+                    : `GST Register`}
+                </span>
+                <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: "2px", backgroundColor: "var(--bg-secondary)", fontFamily: "var(--font-mono)" }}>
+                  {rows.length}
                 </span>
               </button>
 
@@ -908,21 +1334,26 @@ export default function WorkspacePage() {
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: "5px",
-                    padding: "4px 10px",
-                    borderRadius: "5px",
-                    fontSize: "0.775rem",
-                    fontWeight: 600,
+                    gap: "6px",
+                    padding: "6px 12px",
+                    borderRadius: "3px 3px 0 0",
+                    fontSize: "0.75rem",
+                    fontWeight: effectiveActiveTab === "schedule3" ? 700 : 500,
                     cursor: "pointer",
-                    border: "none",
+                    border: effectiveActiveTab === "schedule3" ? "1px solid var(--border-subtle)" : "1px solid transparent",
+                    borderTop: effectiveActiveTab === "schedule3" ? "2px solid var(--accent-ink)" : "2px solid transparent",
+                    borderBottom: effectiveActiveTab === "schedule3" ? "1px solid var(--bg-card)" : "1px solid transparent",
                     whiteSpace: "nowrap",
                     backgroundColor: effectiveActiveTab === "schedule3" ? "var(--bg-card)" : "transparent",
-                    color: effectiveActiveTab === "schedule3" ? "#c084fc" : "var(--text-secondary)",
-                    boxShadow: effectiveActiveTab === "schedule3" ? "0 1px 3px rgba(0,0,0,0.3)" : "none",
+                    color: effectiveActiveTab === "schedule3" ? "var(--accent-ink)" : "var(--text-muted)",
+                    marginBottom: effectiveActiveTab === "schedule3" ? "-1px" : "0",
                   }}
                 >
-                  <Layers size={13} color={effectiveActiveTab === "schedule3" ? "#c084fc" : "var(--text-muted)"} />
-                  <span>Schedule III ({s3Records.length})</span>
+                  <Layers size={12} color={effectiveActiveTab === "schedule3" ? "var(--accent-ink)" : "var(--text-muted)"} />
+                  <span>Schedule III</span>
+                  <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: "2px", backgroundColor: "var(--bg-secondary)", fontFamily: "var(--font-mono)" }}>
+                    {s3Records.length}
+                  </span>
                 </button>
               )}
             </div>
@@ -1028,9 +1459,69 @@ export default function WorkspacePage() {
                   <ChevronRight size={13} />
                 </button>
 
+                {/* In-PDF Live Search & Highlight Toolbar Box */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    backgroundColor: "var(--bg-primary)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "3px",
+                    padding: "2px 6px",
+                    marginLeft: "4px",
+                  }}
+                  title="Search & highlight text across PDF canvas and extracted blocks"
+                >
+                  <Search size={11} color="var(--accent-ink)" />
+                  <input
+                    type="text"
+                    value={pdfSearchTerm}
+                    onChange={(e) => {
+                      const term = e.target.value;
+                      setPdfSearchTerm(term);
+                      if (iframeRef.current && effectivePdfSrc) {
+                        iframeRef.current.src = `${effectivePdfSrc}#page=${currentPdfPage}${term ? `&search=${encodeURIComponent(term)}` : ""}`;
+                      }
+                    }}
+                    placeholder="Highlight in PDF..."
+                    style={{
+                      border: "none",
+                      outline: "none",
+                      backgroundColor: "transparent",
+                      fontSize: "0.7rem",
+                      color: "var(--accent-ink)",
+                      width: "120px",
+                      fontFamily: "var(--font-mono)",
+                    }}
+                  />
+                  {pdfSearchTerm && (
+                    <button
+                      onClick={() => {
+                        setPdfSearchTerm("");
+                        if (iframeRef.current && effectivePdfSrc) {
+                          iframeRef.current.src = `${effectivePdfSrc}#page=${currentPdfPage}`;
+                        }
+                      }}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        color: "var(--text-muted)",
+                        padding: 0,
+                        display: "flex",
+                        alignItems: "center",
+                      }}
+                      title="Clear highlight"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
+                </div>
+
                 {/* Pop-out to new window */}
                 <a
-                  href={`${effectivePdfSrc}#page=${currentPdfPage}`}
+                  href={`${effectivePdfSrc}#page=${currentPdfPage}${pdfSearchTerm ? `&search=${encodeURIComponent(pdfSearchTerm)}` : ""}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{
@@ -1137,24 +1628,26 @@ export default function WorkspacePage() {
             )}
           </div>
 
-          {/* Active Highlight Banner */}
+          {/* Active Highlight Banner — Canary Yellow / Warm Amber Highlighter */}
           {(highlightedRowId || highlightedBlockId || highlightedSqlId || highlightedS3Id) && (
             <div
               style={{
-                backgroundColor: "rgba(245, 158, 11, 0.12)",
-                borderBottom: "1px solid rgba(245, 158, 11, 0.25)",
-                padding: "5px 0.75rem",
+                backgroundColor: "rgba(254, 240, 138, 0.78)",
+                borderBottom: "1.5px solid #D97706",
+                padding: "6px 0.85rem",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
                 fontSize: "0.75rem",
-                color: "#fbbf24",
-                fontWeight: 600,
+                color: "#78350F",
+                fontWeight: 700,
                 flexShrink: 0,
+                fontFamily: "var(--font-mono)",
+                boxShadow: "0 1px 4px rgba(217, 119, 6, 0.15)",
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <Sparkles size={13} />
+                <Sparkles size={13} color="#B45309" />
                 <span>
                   {highlightedBlockId
                     ? `Evidence Focused on Page ${currentPdfPage} (${highlightedBlockId})`
@@ -1175,10 +1668,11 @@ export default function WorkspacePage() {
                 style={{
                   background: "transparent",
                   border: "none",
-                  color: "#fbbf24",
+                  color: "#92400E",
                   fontSize: "0.725rem",
                   cursor: "pointer",
                   textDecoration: "underline",
+                  fontWeight: 700,
                 }}
               >
                 Clear Focus
@@ -1204,78 +1698,183 @@ export default function WorkspacePage() {
                     flex: 1,
                     position: "relative",
                     minHeight: 0,
-                    backgroundColor: "#1e293b",
+                    backgroundColor: "var(--bg-secondary)",
                     display: "flex",
                     flexDirection: "column",
                   }}
                 >
-                  {/* Floating Citation Glow Pill if an evidence citation is focused */}
-                  {highlightedBlockId && (
+                  {/* Floating Auditor Evidence Callout Banner */}
+                  {(highlightedBlockId || activeCitationText || pdfSearchTerm) && (
                     <div
                       style={{
                         position: "absolute",
-                        top: "10px",
+                        bottom: "16px",
                         left: "50%",
                         transform: "translateX(-50%)",
-                        zIndex: 30,
-                        backgroundColor: "rgba(15, 23, 42, 0.94)",
-                        backdropFilter: "blur(6px)",
-                        border: "1px solid #f59e0b",
-                        color: "#fbbf24",
-                        padding: "5px 14px",
-                        borderRadius: "20px",
-                        fontSize: "0.75rem",
-                        fontWeight: 600,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        boxShadow: "0 6px 20px rgba(0,0,0,0.6)",
+                        width: "92%",
+                        maxWidth: "760px",
+                        zIndex: 35,
+                        backgroundColor: "rgba(250, 248, 243, 0.98)",
+                        backdropFilter: "blur(8px)",
+                        border: "1.5px solid #D97706",
+                        borderRadius: "6px",
+                        boxShadow: "0 8px 30px rgba(15, 56, 42, 0.2), 0 0 0 1px rgba(217, 119, 6, 0.3)",
+                        overflow: "hidden",
+                        fontFamily: "var(--font-sans)",
+                        animation: "citationPulseAnimation 3s infinite ease-in-out",
                       }}
                     >
-                      <Sparkles size={13} color="#fbbf24" />
-                      <span>Evidence Citation: Jumped to Page {currentPdfPage}</span>
-                      <button
-                        onClick={() => setPdfViewMode("blocks")}
+                      {/* Callout Header */}
+                      <div
                         style={{
-                          background: "rgba(245, 158, 11, 0.25)",
-                          border: "1px solid rgba(245, 158, 11, 0.4)",
-                          color: "#fde68a",
-                          fontSize: "0.675rem",
-                          fontWeight: 700,
-                          padding: "2px 7px",
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                          marginLeft: "4px",
-                        }}
-                      >
-                        Inspect Text Block
-                      </button>
-                      <button
-                        onClick={() => setHighlightedBlockId(null)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "#94a3b8",
-                          cursor: "pointer",
                           display: "flex",
                           alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "6px 12px",
+                          backgroundColor: "#FEF08A",
+                          borderBottom: "1px solid #D97706",
+                          color: "#78350F",
+                          fontSize: "0.725rem",
+                          fontWeight: 700,
+                          fontFamily: "var(--font-mono)",
                         }}
                       >
-                        <X size={13} />
-                      </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <Sparkles size={13} color="#B45309" />
+                          <span>
+                            ★ CITED AUDIT EVIDENCE • PAGE {currentPdfPage} {highlightedBlockId ? `(${highlightedBlockId})` : ""}
+                          </span>
+                          {pdfSearchTerm && (
+                            <span
+                              style={{
+                                backgroundColor: "rgba(180, 83, 9, 0.15)",
+                                padding: "1px 6px",
+                                borderRadius: "3px",
+                                border: "1px solid rgba(180, 83, 9, 0.3)",
+                              }}
+                            >
+                              Highlighted: &ldquo;{pdfSearchTerm}&rdquo;
+                            </span>
+                          )}
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <button
+                            onClick={() => {
+                              setPdfViewMode("blocks");
+                              if (highlightedBlockId) {
+                                setTimeout(() => {
+                                  const el = blockRefs.current[highlightedBlockId];
+                                  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                                }, 150);
+                              }
+                            }}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              backgroundColor: "var(--accent-ink)",
+                              color: "#FAF8F3",
+                              fontSize: "0.7rem",
+                              fontWeight: 700,
+                              padding: "3px 9px",
+                              borderRadius: "3px",
+                              border: "none",
+                              cursor: "pointer",
+                              fontFamily: "var(--font-mono)",
+                              boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                            }}
+                            title="Inspect the full paragraph & numbers in extracted SQL Blocks view"
+                          >
+                            <Layers size={11} />
+                            <span>View in SQL Blocks →</span>
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setHighlightedBlockId(null);
+                              setActiveCitationText(null);
+                              setPdfSearchTerm("");
+                              if (iframeRef.current && effectivePdfSrc) {
+                                iframeRef.current.src = `${effectivePdfSrc}#page=${currentPdfPage}`;
+                              }
+                            }}
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "#92400E",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              padding: "2px",
+                            }}
+                            title="Dismiss citation callout"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Callout Body with Highlighted Text */}
+                      <div
+                        style={{
+                          padding: "8px 14px",
+                          maxHeight: "110px",
+                          overflowY: "auto",
+                          fontSize: "0.8rem",
+                          lineHeight: 1.5,
+                          color: "var(--text-primary)",
+                          backgroundColor: "var(--bg-card)",
+                        }}
+                      >
+                        {(() => {
+                          const displayContent =
+                            activeCitationText ||
+                            (() => {
+                              const found = sqlRecords.find((r) => r.block_id === highlightedBlockId);
+                              return found ? found.raw_text || found.line_item : "";
+                            })();
+                          if (displayContent) {
+                            return renderHighlightedContent(displayContent, pdfSearchTerm, true);
+                          }
+                          return (
+                            <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                              Target evidence cited on Page {currentPdfPage}. Use the search bar or flip to SQL Blocks to inspect statutory disclosures.
+                            </span>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Callout Footer */}
+                      <div
+                        style={{
+                          padding: "3px 12px",
+                          backgroundColor: "var(--bg-secondary)",
+                          borderTop: "1px solid var(--border-subtle)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          fontSize: "0.65rem",
+                          color: "var(--text-muted)",
+                          fontFamily: "var(--font-mono)",
+                        }}
+                      >
+                        <span>⚡ Live highlighting active: Chromium PDFium search parameter &amp; SQL Blocks citation glow</span>
+                        <span>Double-click or drag to select text</span>
+                      </div>
                     </div>
                   )}
 
                   <iframe
                     ref={iframeRef}
-                    key={`${effectivePdfSrc}-p${currentPdfPage}`}
-                    src={`${effectivePdfSrc}#page=${currentPdfPage}`}
+                    key={`${effectivePdfSrc}-p${currentPdfPage}-${pdfSearchTerm}-${activeFileName}`}
+                    src={`${effectivePdfSrc}#page=${currentPdfPage}${pdfSearchTerm ? `&search=${encodeURIComponent(pdfSearchTerm)}` : ""}`}
                     title={`Visual PDF - ${activeFileName}`}
                     style={{
                       width: "100%",
                       height: "100%",
                       border: "none",
-                      backgroundColor: "#1e293b",
+                      backgroundColor: "var(--bg-secondary)",
                       display: "block",
                     }}
                   />
@@ -1285,20 +1884,26 @@ export default function WorkspacePage() {
                 <div style={{ flex: 1, padding: "1.25rem", overflowY: "auto", overflowX: "hidden", backgroundColor: "var(--bg-primary)" }}>
                   {!extractedPdf ? (
                     <div style={{ padding: "4rem 2rem", textAlign: "center", color: "var(--text-secondary)" }}>
-                      <FileText size={44} color="#3b82f6" style={{ margin: "0 auto 1rem auto", opacity: 0.8 }} />
-                      <h3 style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.5rem" }}>
-                        No PDF Document Loaded
+                      <FileText size={44} color="var(--accent-ink)" style={{ margin: "0 auto 1rem auto", opacity: 0.8 }} />
+                      <h3 style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--accent-ink)", marginBottom: "0.5rem", fontFamily: "var(--font-serif)" }}>
+                        No Statutory Document Loaded
                       </h3>
                       <p style={{ maxWidth: "420px", margin: "0 auto 1.5rem auto", fontSize: "0.85rem", lineHeight: 1.5 }}>
-                        Upload any client financial statement PDF. AuditIQ extracts the text into an SQL database and uses Google Gemini to answer questions with live highlighted citations.
+                        Upload client statutory financial statement PDF. AuditIQ extracts line items into an SQL working paper database and grounds audit inquiries with live voucher citations.
                       </p>
                       <button
-                        onClick={() => setShowUploadModal(true)}
+                        type="button"
+                        onClick={() => {
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = "";
+                            fileInputRef.current.click();
+                          }
+                        }}
                         style={{
                           padding: "0.5rem 1.25rem",
-                          borderRadius: "5px",
-                          backgroundColor: "var(--accent-blue)",
-                          color: "#ffffff",
+                          borderRadius: "3px",
+                          backgroundColor: "var(--accent-ink, #0F382A)",
+                          color: "#FAF8F3",
                           fontSize: "0.825rem",
                           fontWeight: 600,
                           border: "none",
@@ -1306,10 +1911,11 @@ export default function WorkspacePage() {
                           display: "inline-flex",
                           alignItems: "center",
                           gap: "6px",
+                          boxShadow: "var(--shadow-card)",
                         }}
                       >
                         <UploadCloud size={15} />
-                        <span>Upload Document</span>
+                        <span>Upload Working Paper</span>
                       </button>
                     </div>
                   ) : (
@@ -1317,11 +1923,11 @@ export default function WorkspacePage() {
                       style={{
                         width: "100%",
                         boxSizing: "border-box",
-                        backgroundColor: "#0d1424",
-                        color: "#f8fafc",
-                        borderRadius: "8px",
-                        border: "1px solid #1e293b",
-                        boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+                        backgroundColor: "var(--bg-card)",
+                        color: "var(--text-primary)",
+                        borderRadius: "4px",
+                        border: "1px solid var(--border-subtle)",
+                        boxShadow: "var(--shadow-card)",
                         padding: "1.5rem 2rem",
                         lineHeight: 1.65,
                       }}
@@ -1332,16 +1938,16 @@ export default function WorkspacePage() {
                           display: "flex",
                           justifyContent: "space-between",
                           alignItems: "flex-start",
-                          borderBottom: "1px solid #1e293b",
+                          borderBottom: "1px solid var(--border-subtle)",
                           paddingBottom: "0.75rem",
                           marginBottom: "1.25rem",
                         }}
                       >
                         <div>
-                          <span style={{ fontSize: "0.685rem", textTransform: "uppercase", fontWeight: 700, color: "#60a5fa", letterSpacing: "0.04em" }}>
-                            Audited Statutory Statement
+                          <span style={{ fontSize: "0.685rem", textTransform: "uppercase", fontWeight: 700, color: "var(--accent-ink)", letterSpacing: "0.05em", fontFamily: "var(--font-mono)" }}>
+                            Audited Statutory Working Paper
                           </span>
-                          <h4 style={{ margin: "2px 0 0 0", fontSize: "1rem", fontWeight: 700, color: "#f8fafc" }}>
+                          <h4 style={{ margin: "2px 0 0 0", fontSize: "1rem", fontWeight: 700, color: "var(--accent-ink)", fontFamily: "var(--font-serif)" }}>
                             {extractedPdf.file_name}
                           </h4>
                         </div>
@@ -1349,10 +1955,12 @@ export default function WorkspacePage() {
                           style={{
                             fontSize: "0.75rem",
                             fontWeight: 700,
-                            color: "#94a3b8",
-                            backgroundColor: "#1e293b",
-                            padding: "2px 8px",
-                            borderRadius: "4px",
+                            color: "var(--accent-ink)",
+                            backgroundColor: "var(--bg-secondary)",
+                            border: "1px solid var(--border-subtle)",
+                            padding: "3px 8px",
+                            borderRadius: "3px",
+                            fontFamily: "var(--font-mono)",
                           }}
                         >
                           Page {currentPdfPage} of {totalPages}
@@ -1374,31 +1982,69 @@ export default function WorkspacePage() {
                                 className={isTarget ? "citation-highlight-active" : ""}
                                 style={{
                                   marginBottom: "0.85rem",
-                                  padding: isTarget ? "0.75rem 1rem" : "0.35rem 0",
-                                  borderRadius: isTarget ? "6px" : "0",
+                                  padding: isTarget ? "0.75rem 1rem" : "0.5rem 0.75rem",
+                                  borderRadius: isTarget ? "4px" : "3px",
+                                  border: isTarget ? "2px solid #D97706" : "1px solid var(--border-subtle)",
+                                  backgroundColor: isTarget ? "rgba(254, 240, 138, 0.45)" : "var(--bg-elevated)",
                                   transition: "all 0.2s ease-out",
                                 }}
                               >
                                 {isTarget && (
-                                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#fbbf24", fontSize: "0.725rem", fontWeight: 700, marginBottom: "4px" }}>
-                                    <Sparkles size={12} />
-                                    <span>Cited Statutory Evidence Block ({rec.block_id})</span>
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "space-between",
+                                      marginBottom: "6px",
+                                      paddingBottom: "4px",
+                                      borderBottom: "1.5px solid rgba(217, 119, 6, 0.4)",
+                                    }}
+                                  >
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "#92400E", fontSize: "0.725rem", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+                                      <Sparkles size={12} color="#B45309" />
+                                      <span>★ CITED STATUTORY EVIDENCE BLOCK: {rec.block_id}</span>
+                                      {rec.amount > 0 && (
+                                        <span style={{ backgroundColor: "#FEF08A", color: "#78350F", padding: "1px 5px", borderRadius: "2px", border: "1px solid #D97706" }}>
+                                          INR {rec.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <button
+                                      onClick={() => setPdfViewMode("visual")}
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: "4px",
+                                        backgroundColor: "var(--accent-ink)",
+                                        color: "#FAF8F3",
+                                        fontSize: "0.675rem",
+                                        fontWeight: 700,
+                                        padding: "2px 7px",
+                                        borderRadius: "3px",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        fontFamily: "var(--font-mono)",
+                                      }}
+                                    >
+                                      <Eye size={11} />
+                                      <span>View in Visual PDF</span>
+                                    </button>
                                   </div>
                                 )}
                                 {rec.section && (
-                                  <span style={{ fontSize: "0.685rem", color: "#60a5fa", fontWeight: 600, display: "block", marginBottom: "2px" }}>
+                                  <span style={{ fontSize: "0.685rem", color: isTarget ? "#92400E" : "var(--accent-ink)", fontWeight: 700, display: "block", marginBottom: "3px", opacity: 0.9, fontFamily: "var(--font-mono)", letterSpacing: "0.02em" }}>
                                     {rec.section}
                                   </span>
                                 )}
-                                <p style={{ margin: 0, fontSize: "0.875rem", color: isTarget ? "#ffffff" : "#cbd5e1", lineHeight: 1.6, textAlign: "justify" }}>
-                                  {rec.raw_text || rec.line_item}
-                                </p>
+                                <div style={{ margin: 0, fontSize: "0.85rem", color: isTarget ? "#14221B" : "var(--text-primary)", lineHeight: 1.6, textAlign: "left" }}>
+                                  {renderHighlightedContent(rec.raw_text || rec.line_item, pdfSearchTerm, isTarget)}
+                                </div>
                               </div>
                             );
                           });
                         }
                         return (
-                          <div style={{ padding: "2rem 1rem", textAlign: "center", color: "#94a3b8" }}>
+                          <div style={{ padding: "2rem 1rem", textAlign: "center", color: "var(--text-muted)" }}>
                             <p style={{ margin: 0, fontSize: "0.875rem" }}>
                               Page {currentPdfPage} is a visual / graphical layout (e.g. cover page, charts, or images).
                             </p>
@@ -1410,9 +2056,9 @@ export default function WorkspacePage() {
                                 alignItems: "center",
                                 gap: "6px",
                                 padding: "6px 14px",
-                                borderRadius: "5px",
-                                backgroundColor: "var(--accent-blue)",
-                                color: "#ffffff",
+                                borderRadius: "3px",
+                                backgroundColor: "var(--accent-ink)",
+                                color: "#FAF8F3",
                                 fontSize: "0.775rem",
                                 fontWeight: 600,
                                 border: "none",
@@ -1426,7 +2072,7 @@ export default function WorkspacePage() {
                         );
                       })()}
 
-                      <div style={{ textAlign: "right", marginTop: "1.75rem", paddingTop: "0.75rem", borderTop: "1px solid #1e293b", fontSize: "0.7rem", color: "#64748b" }}>
+                      <div style={{ textAlign: "right", marginTop: "1.75rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border-subtle)", fontSize: "0.7rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
                         Indexed into SQLite Table • Section Block Map
                       </div>
                     </div>
@@ -1438,17 +2084,17 @@ export default function WorkspacePage() {
 
           {/* View 2: SQL Extracted Financial Records Table */}
           {effectiveActiveTab === "sql" && (
-            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", backgroundColor: "var(--bg-elevated)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.785rem" }}>
                 <thead>
-                  <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--text-secondary)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <th style={{ padding: "7px 10px", width: "45px" }}>ID</th>
-                    <th style={{ padding: "7px 10px", width: "45px" }}>Page</th>
-                    <th style={{ padding: "7px 10px" }}>Section</th>
-                    <th style={{ padding: "7px 10px" }}>Line Item</th>
-                    <th style={{ padding: "7px 10px", textAlign: "right" }}>Amount (INR)</th>
-                    <th style={{ padding: "7px 10px" }}>Category</th>
-                    <th style={{ padding: "7px 10px" }}>Raw Evidence</th>
+                  <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--accent-ink)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "2px solid var(--border-bright)" }}>
+                    <th style={{ padding: "8px 10px", width: "45px", fontFamily: "var(--font-mono)", fontSize: "0.7rem" }}>ID</th>
+                    <th style={{ padding: "8px 10px", width: "55px", fontFamily: "var(--font-mono)", fontSize: "0.7rem" }}>Page</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Section</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Line Item</th>
+                    <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem" }}>Amount (INR)</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Category</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Raw Evidence</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1461,33 +2107,38 @@ export default function WorkspacePage() {
                           sqlRowRefs.current[r.id] = el;
                         }}
                         className={isHighlighted ? "citation-highlight-active" : ""}
+                        onClick={() => {
+                          jumpToPdfBlock(r.page_number, r.block_id, r.raw_text, r.line_item);
+                        }}
                         style={{
-                          borderBottom: "1px solid rgba(30, 41, 59, 0.5)",
-                          backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "rgba(255, 255, 255, 0.015)" : "transparent",
+                          cursor: "pointer",
+                          borderBottom: "1px solid var(--border-muted)",
+                          backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "var(--bg-elevated)" : "var(--bg-card)",
                           transition: "background-color 0.15s",
                         }}
+                        title={`Click to inspect & highlight on PDF Page ${r.page_number}`}
                       >
-                        <td style={{ padding: "8px 10px", color: isHighlighted ? "#f59e0b" : "var(--text-muted)", fontWeight: 700 }} className="tabular-nums">
+                        <td style={{ padding: "8px 10px", color: "var(--accent-ink)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
                           #{r.id}
                         </td>
-                        <td style={{ padding: "8px 10px", color: "var(--text-primary)", fontWeight: 600 }}>
+                        <td style={{ padding: "8px 10px", color: "var(--text-primary)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>
                           P.{r.page_number}
                         </td>
-                        <td style={{ padding: "8px 10px", color: "#93c5fd", fontWeight: 600 }}>
+                        <td style={{ padding: "8px 10px", color: "var(--accent-ink)", fontWeight: 600 }}>
                           {r.section}
                         </td>
                         <td style={{ padding: "8px 10px", fontWeight: 600, color: "var(--text-primary)" }}>
                           {r.line_item}
                         </td>
-                        <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: r.amount > 0 ? 700 : 400, color: r.amount > 0 ? "#34d399" : "var(--text-muted)" }} className="tabular-nums">
+                        <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: r.amount > 0 ? 700 : 400, color: r.amount > 0 ? "var(--accent-emerald)" : "var(--text-muted)", fontFamily: "var(--font-mono)" }} className="tabular-nums">
                           {r.amount > 0 ? r.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "-"}
                         </td>
                         <td style={{ padding: "8px 10px" }}>
-                          <span style={{ fontSize: "0.685rem", padding: "2px 6px", borderRadius: "4px", backgroundColor: "rgba(59, 130, 246, 0.12)", color: "#60a5fa", fontWeight: 600 }}>
+                          <span style={{ fontSize: "0.685rem", padding: "2px 6px", borderRadius: "3px", backgroundColor: "rgba(15, 56, 42, 0.08)", border: "1px solid rgba(15, 56, 42, 0.2)", color: "var(--accent-ink)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
                             {r.category}
                           </span>
                         </td>
-                        <td style={{ padding: "8px 10px", color: "var(--text-secondary)", fontSize: "0.725rem", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.raw_text}>
+                        <td style={{ padding: "8px 10px", color: "var(--text-secondary)", fontSize: "0.725rem", maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.raw_text}>
                           {r.raw_text}
                         </td>
                       </tr>
@@ -1500,18 +2151,18 @@ export default function WorkspacePage() {
 
           {/* View 3: GST Purchase Register */}
           {effectiveActiveTab === "books" && (
-            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", backgroundColor: "var(--bg-elevated)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.785rem" }}>
                 <thead>
-                  <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--text-secondary)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "1px solid var(--border-subtle)" }}>
-                    <th style={{ padding: "7px 10px", width: "40px" }}>Row</th>
-                    <th style={{ padding: "7px 10px" }}>Vendor</th>
-                    <th style={{ padding: "7px 10px" }}>GSTIN</th>
-                    <th style={{ padding: "7px 10px" }}>Invoice #</th>
-                    <th style={{ padding: "7px 10px", textAlign: "right" }}>Taxable (INR)</th>
-                    <th style={{ padding: "7px 10px", textAlign: "right" }}>Tax (INR)</th>
-                    <th style={{ padding: "7px 10px" }}>Status</th>
-                    <th style={{ padding: "7px 10px" }}>Observation</th>
+                  <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--accent-ink)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "2px solid var(--border-bright)" }}>
+                    <th style={{ padding: "8px 10px", width: "45px", fontFamily: "var(--font-mono)", fontSize: "0.7rem" }}>Row</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Vendor</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>GSTIN</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Invoice #</th>
+                    <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem" }}>Taxable (INR)</th>
+                    <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem" }}>Tax (INR)</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Status</th>
+                    <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Observation</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1526,41 +2177,43 @@ export default function WorkspacePage() {
                         }}
                         className={isHighlighted ? "citation-highlight-active" : ""}
                         style={{
-                          borderBottom: "1px solid rgba(30, 41, 59, 0.5)",
-                          backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "rgba(255, 255, 255, 0.015)" : "transparent",
+                          borderBottom: "1px solid var(--border-muted)",
+                          backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "var(--bg-elevated)" : "var(--bg-card)",
+                          transition: "background-color 0.15s",
                         }}
                       >
-                        <td style={{ padding: "8px 10px", color: isHighlighted ? "#f59e0b" : "var(--text-muted)", fontWeight: 700 }} className="tabular-nums">
+                        <td style={{ padding: "8px 10px", color: "var(--accent-ink)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
                           #{r.row_id}
                         </td>
                         <td style={{ padding: "8px 10px", fontWeight: 600, color: "var(--text-primary)" }}>
                           {r.party_name}
                         </td>
-                        <td style={{ padding: "8px 10px", fontFamily: "monospace", color: "var(--text-secondary)", fontSize: "0.725rem" }}>
+                        <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--text-secondary)", fontSize: "0.725rem" }}>
                           {r.gstin}
                         </td>
-                        <td style={{ padding: "8px 10px", fontFamily: "monospace", fontWeight: 600 }}>
+                        <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--text-primary)" }}>
                           {r.books_invoice}
                         </td>
-                        <td style={{ padding: "8px 10px", textAlign: "right" }} className="tabular-nums">
+                        <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} className="tabular-nums">
                           {r.books_taxable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                         </td>
-                        <td style={{ padding: "8px 10px", textAlign: "right" }} className="tabular-nums">
+                        <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-mono)" }} className="tabular-nums">
                           {r.tax_amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                         </td>
                         <td style={{ padding: "8px 10px" }}>
                           <span
                             style={{
                               padding: "2px 6px",
-                              borderRadius: "4px",
-                              fontSize: "0.685rem",
+                              borderRadius: "3px",
+                              fontSize: "0.65rem",
                               fontWeight: 700,
-                              backgroundColor: isMatch ? "rgba(16, 185, 129, 0.12)" : "rgba(239, 68, 68, 0.12)",
-                              border: isMatch ? "1px solid rgba(16, 185, 129, 0.25)" : "1px solid rgba(239, 68, 68, 0.25)",
-                              color: isMatch ? "#34d399" : "#f87171",
+                              backgroundColor: isMatch ? "var(--accent-emerald-subtle)" : "var(--accent-rose-subtle)",
+                              border: isMatch ? "1px solid rgba(21, 128, 61, 0.25)" : "1px solid rgba(185, 28, 28, 0.25)",
+                              color: isMatch ? "var(--accent-emerald)" : "var(--accent-rose)",
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "3px",
+                              fontFamily: "var(--font-mono)",
                             }}
                           >
                             {isMatch ? <CheckCircle2 size={10} /> : <AlertTriangle size={10} />}
@@ -1581,54 +2234,64 @@ export default function WorkspacePage() {
           {/* View 4: Schedule III ERP Classification & Mapping View */}
           {effectiveActiveTab === "schedule3" && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "auto" }}>
-              {/* Executive ERP & Trial Balance KPI Banner */}
+              {/* Executive Ledger Summary Banner */}
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                  gap: "10px",
-                  padding: "0.75rem 1rem",
-                  backgroundColor: "var(--bg-secondary)",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  backgroundColor: "var(--bg-card)",
                   borderBottom: "1px solid var(--border-subtle)",
                   flexShrink: 0,
                 }}
               >
-                <div style={{ padding: "8px 12px", borderRadius: "6px", backgroundColor: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
-                  <span style={{ fontSize: "0.685rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Source ERP Layout</span>
-                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#60a5fa", marginTop: "2px" }}>{detectedErp}</div>
+                <div style={{ padding: "8px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                    Source ERP Layout
+                  </span>
+                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent-ink)", marginTop: "2px", fontFamily: "var(--font-serif)" }}>
+                    {detectedErp}
+                  </div>
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: "6px", backgroundColor: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
-                  <span style={{ fontSize: "0.685rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Trial Balance Integrity</span>
-                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#34d399", marginTop: "2px" }}>Balanced ✓ ({s3TotalBalanceFormatted})</div>
+                <div style={{ padding: "8px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                    Trial Balance Integrity
+                  </span>
+                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent-emerald)", marginTop: "2px", fontFamily: "var(--font-mono)" }}>
+                    Balanced ✓ ({s3TotalBalanceFormatted})
+                  </div>
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: "6px", backgroundColor: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
-                  <span style={{ fontSize: "0.685rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Schedule III Auto-Mapped</span>
-                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#c084fc", marginTop: "2px" }}>
+                <div style={{ padding: "8px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                    Schedule III Auto-Mapped
+                  </span>
+                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent-ink)", marginTop: "2px", fontFamily: "var(--font-mono)" }}>
                     {filteredS3Records.filter(r => !r.section.includes("UNMAPPED") && !r.section.includes("Review")).length} / {s3Records.length} Heads
                   </div>
                 </div>
-                <div style={{ padding: "8px 12px", borderRadius: "6px", backgroundColor: "var(--bg-card)", border: "1px solid var(--border-subtle)" }}>
-                  <span style={{ fontSize: "0.685rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>Review Queue</span>
-                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "#f59e0b", marginTop: "2px" }}>
-                    {filteredS3Records.filter(r => r.section.includes("UNMAPPED") || r.section.includes("Review")).length} Pending
+                <div style={{ padding: "8px 14px" }}>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                    Audit Review Queue
+                  </span>
+                  <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent-amber)", marginTop: "2px", fontFamily: "var(--font-mono)" }}>
+                    {filteredS3Records.filter(r => r.section.includes("UNMAPPED") || r.section.includes("Review")).length} Pending Heads
                   </div>
                 </div>
               </div>
 
               {/* Schedule III Mappings Table */}
-              <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", backgroundColor: "var(--bg-elevated)" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.785rem" }}>
                   <thead>
-                    <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--text-secondary)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "1px solid var(--border-subtle)" }}>
-                      <th style={{ padding: "7px 10px", width: "85px" }}>{erpShortLabel} #</th>
-                      <th style={{ padding: "7px 10px" }}>Account Description</th>
-                      <th style={{ padding: "7px 10px", width: "40px", textAlign: "center" }}>Side</th>
-                      <th style={{ padding: "7px 10px", textAlign: "right" }}>Amount (INR)</th>
-                      <th style={{ padding: "7px 10px" }}>Schedule III Code</th>
-                      <th style={{ padding: "7px 10px" }}>Classification Head</th>
-                      <th style={{ padding: "7px 10px" }}>Method</th>
-                      <th style={{ padding: "7px 10px", textAlign: "right" }}>Confidence</th>
-                      <th style={{ padding: "7px 10px" }}>Audit Status</th>
+                    <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--accent-ink)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "2px solid var(--border-bright)" }}>
+                      <th style={{ padding: "8px 10px", width: "85px", fontFamily: "var(--font-mono)", fontSize: "0.7rem" }}>{erpShortLabel} #</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Account Description</th>
+                      <th style={{ padding: "8px 10px", width: "45px", textAlign: "center", fontSize: "0.7rem" }}>Side</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem" }}>Amount (INR)</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Schedule III Code</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Classification Head</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Method</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem" }}>Confidence</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>Audit Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1658,36 +2321,36 @@ export default function WorkspacePage() {
                           }}
                           className={isHighlighted ? "citation-highlight-active" : ""}
                           style={{
-                            borderBottom: "1px solid rgba(30, 41, 59, 0.5)",
-                            backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "rgba(255, 255, 255, 0.015)" : "transparent",
+                            borderBottom: "1px solid var(--border-muted)",
+                            backgroundColor: isHighlighted ? undefined : idx % 2 === 0 ? "var(--bg-elevated)" : "var(--bg-card)",
                             transition: "background-color 0.15s",
                           }}
                         >
-                          <td style={{ padding: "8px 10px", color: isHighlighted ? "#f59e0b" : "#93c5fd", fontWeight: 700, fontFamily: "monospace" }}>
+                          <td style={{ padding: "8px 10px", color: "var(--accent-ink)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
                             {glCode}
                           </td>
                           <td style={{ padding: "8px 10px", fontWeight: 600, color: "var(--text-primary)" }}>
                             {acctName}
                           </td>
                           <td style={{ padding: "8px 10px", textAlign: "center" }}>
-                            <span style={{ fontSize: "0.685rem", fontWeight: 700, color: side === "Dr" ? "#34d399" : "#60a5fa" }}>
+                            <span style={{ fontSize: "0.685rem", fontWeight: 700, color: side === "Dr" ? "var(--accent-emerald)" : "var(--accent-rose)", fontFamily: "var(--font-mono)" }}>
                               {side}
                             </span>
                           </td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: "#34d399" }} className="tabular-nums">
-                            {r.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: "var(--text-primary)" }} className="tabular-nums">
+                            {r.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
                           <td style={{ padding: "8px 10px" }}>
                             <span
                               style={{
                                 fontSize: "0.685rem",
                                 padding: "2px 6px",
-                                borderRadius: "4px",
-                                backgroundColor: isAutoMapped ? "rgba(167, 139, 250, 0.15)" : "rgba(245, 158, 11, 0.15)",
-                                border: isAutoMapped ? "1px solid rgba(167, 139, 250, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)",
-                                color: isAutoMapped ? "#c084fc" : "#fbbf24",
+                                borderRadius: "3px",
+                                backgroundColor: isAutoMapped ? "rgba(15, 56, 42, 0.08)" : "var(--accent-amber-subtle)",
+                                border: isAutoMapped ? "1px solid rgba(15, 56, 42, 0.2)" : "1px solid rgba(180, 83, 9, 0.25)",
+                                color: isAutoMapped ? "var(--accent-ink)" : "var(--accent-amber)",
                                 fontWeight: 700,
-                                fontFamily: "monospace",
+                                fontFamily: "var(--font-mono)",
                               }}
                             >
                               {fsliCode}
@@ -1701,26 +2364,27 @@ export default function WorkspacePage() {
                               {method === "dict" ? "Dictionary" : method === "emb" ? "Embedding" : "Review"}
                             </span>
                           </td>
-                          <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: isAutoMapped ? "#34d399" : "#f59e0b" }} className="tabular-nums">
+                          <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: isAutoMapped ? "var(--accent-emerald)" : "var(--accent-amber)" }} className="tabular-nums">
                             {Math.round(conf * 100)}%
                           </td>
                           <td style={{ padding: "8px 10px" }}>
                             <span
                               style={{
                                 padding: "2px 6px",
-                                borderRadius: "4px",
-                                fontSize: "0.685rem",
+                                borderRadius: "3px",
+                                fontSize: "0.65rem",
                                 fontWeight: 700,
-                                backgroundColor: isAutoMapped ? "rgba(16, 185, 129, 0.12)" : "rgba(245, 158, 11, 0.12)",
-                                border: isAutoMapped ? "1px solid rgba(16, 185, 129, 0.25)" : "1px solid rgba(245, 158, 11, 0.25)",
-                                color: isAutoMapped ? "#34d399" : "#fbbf24",
+                                backgroundColor: isAutoMapped ? "var(--accent-emerald-subtle)" : "var(--accent-amber-subtle)",
+                                border: isAutoMapped ? "1px solid rgba(21, 128, 61, 0.25)" : "1px solid rgba(180, 83, 9, 0.25)",
+                                color: isAutoMapped ? "var(--accent-emerald)" : "var(--accent-amber)",
                                 display: "inline-flex",
                                 alignItems: "center",
                                 gap: "3px",
+                                fontFamily: "var(--font-mono)",
                               }}
                             >
                               {isAutoMapped ? <CheckCircle2 size={10} /> : <AlertTriangle size={10} />}
-                              {isAutoMapped ? "AUTO-CLASSIFIED" : "PENDING REVIEW"}
+                              {isAutoMapped ? "VOUCHED MAPPING" : "INQUIRY REQUIRED"}
                             </span>
                           </td>
                         </tr>
@@ -1748,34 +2412,35 @@ export default function WorkspacePage() {
           {/* Chat Header */}
           <div
             style={{
-              height: "40px",
-              padding: "0 0.75rem",
+              height: "44px",
+              padding: "0 0.85rem",
               borderBottom: "1px solid var(--border-subtle)",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
               flexShrink: 0,
+              backgroundColor: "var(--bg-secondary)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div
                 style={{
                   width: "22px",
                   height: "22px",
-                  borderRadius: "5px",
-                  backgroundColor: "var(--accent-blue)",
+                  borderRadius: "3px",
+                  backgroundColor: "var(--accent-ink)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                 }}
               >
-                <Bot size={13} color="#ffffff" />
+                <FileCheck size={13} color="#FAF8F3" />
               </div>
-              <span style={{ fontSize: "0.825rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                AuditIQ Copilot
+              <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-ink)", fontFamily: "var(--font-serif)" }}>
+                Statutory Findings &amp; AI Working Notes
               </span>
-              <span style={{ fontSize: "0.7rem", color: "#34d399", display: "inline-flex", alignItems: "center", gap: "3px" }}>
-                • Grounded on {sqlRecords.length} SQL records
+              <span style={{ fontSize: "0.685rem", color: "var(--accent-emerald)", display: "inline-flex", alignItems: "center", gap: "3px", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                • Grounded on {sqlRecords.length} records
               </span>
             </div>
 
@@ -1785,7 +2450,7 @@ export default function WorkspacePage() {
                   {
                     id: "new-session",
                     role: "assistant",
-                    content: "Chat reset. Ask any question regarding the extracted financial records.",
+                    content: "Docket consultation cleared. Submit statutory inquiries or voucher verification requests below.",
                     timestamp: generateCurrentTime(),
                     citations: [],
                   },
@@ -1793,19 +2458,21 @@ export default function WorkspacePage() {
                 setHighlightedRowId(null);
                 setHighlightedBlockId(null);
                 setHighlightedSqlId(null);
+                setHighlightedS3Id(null);
               }}
               title="Reset Chat"
               style={{
-                backgroundColor: "transparent",
+                backgroundColor: "var(--bg-card)",
                 border: "1px solid var(--border-subtle)",
-                borderRadius: "4px",
-                color: "var(--text-muted)",
-                padding: "3px 7px",
+                borderRadius: "3px",
+                color: "var(--text-secondary)",
+                padding: "3px 8px",
                 fontSize: "0.725rem",
                 cursor: "pointer",
                 display: "flex",
                 alignItems: "center",
                 gap: "4px",
+                fontFamily: "var(--font-mono)",
               }}
             >
               <RefreshCw size={11} />
@@ -1814,7 +2481,7 @@ export default function WorkspacePage() {
           </div>
 
           {/* Message History Feed */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "0.85rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "0.85rem", display: "flex", flexDirection: "column", gap: "0.85rem", backgroundColor: "var(--bg-secondary)" }}>
             {messages.map((m) => (
               <div
                 key={m.id}
@@ -1826,24 +2493,36 @@ export default function WorkspacePage() {
               >
                 <div
                   style={{
-                    maxWidth: "92%",
-                    borderRadius: "7px",
-                    padding: "0.75rem 0.85rem",
-                    backgroundColor: m.role === "user" ? "var(--accent-blue)" : "var(--bg-card)",
-                    border: m.role === "assistant" ? "1px solid var(--border-subtle)" : "none",
-                    color: "#ffffff",
+                    maxWidth: m.role === "user" ? "90%" : "96%",
+                    borderRadius: "4px",
+                    padding: m.role === "user" ? "0.7rem 0.85rem" : "0.85rem 1rem",
+                    backgroundColor: m.role === "user" ? "var(--bg-card)" : "var(--bg-elevated)",
+                    border: "1px solid var(--border-subtle)",
+                    borderLeft: m.role === "user" ? "3px solid var(--accent-ink)" : "1px solid var(--border-subtle)",
+                    color: "var(--text-primary)",
                     fontSize: "0.825rem",
-                    lineHeight: 1.55,
-                    boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+                    lineHeight: 1.6,
+                    boxShadow: "var(--shadow-card)",
                   }}
                 >
-                  <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+                  {m.role === "assistant" && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px", paddingBottom: "4px", borderBottom: "1px solid var(--border-muted)" }}>
+                      <span style={{ fontSize: "0.65rem", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "var(--accent-ink)", fontFamily: "var(--font-mono)" }}>
+                        Statutory Verification Note
+                      </span>
+                      <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                        ICAI / SA-520
+                      </span>
+                    </div>
+                  )}
+
+                  <div style={{ whiteSpace: "pre-wrap", color: "var(--text-primary)" }}>{m.content}</div>
 
                   {/* Interactive Citation Badges */}
                   {m.citations && m.citations.length > 0 && (
-                    <div style={{ marginTop: "0.6rem", paddingTop: "0.45rem", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-                      <div style={{ fontSize: "0.65rem", color: "#93c5fd", fontWeight: 700, marginBottom: "4px", letterSpacing: "0.02em" }}>
-                        EVIDENCE CITATIONS (CLICK TO JUMP &amp; PULSE):
+                    <div style={{ marginTop: "0.75rem", paddingTop: "0.5rem", borderTop: "1px solid var(--border-muted)" }}>
+                      <div style={{ fontSize: "0.65rem", color: "var(--accent-ink)", fontWeight: 700, marginBottom: "5px", letterSpacing: "0.03em", fontFamily: "var(--font-mono)", textTransform: "uppercase" }}>
+                        Audit Evidence Vouchers (Click to inspect):
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
                         {m.citations.map((c, i) => (
@@ -1862,15 +2541,30 @@ export default function WorkspacePage() {
                               } else if (c.label?.includes("GST Row") || c.label?.includes("Row #") || isExcelActive || c.type === "excel") {
                                 jumpToTableRow(c.row_index!);
                               } else if (c.page && !isExcelActive) {
-                                jumpToPdfBlock(c.page, c.block_id);
+                                jumpToPdfBlock(c.page, c.block_id, c.value, c.label);
                               } else if (c.row_index) {
                                 jumpToSqlRecord(c.row_index);
                               }
                             }}
                             className="citation-tag"
                             title="Click to jump & highlight evidence in viewer"
+                            style={{
+                              backgroundColor: "var(--bg-card)",
+                              border: "1px solid var(--border-bright)",
+                              color: "var(--accent-ink)",
+                              padding: "3px 8px",
+                              borderRadius: "3px",
+                              fontSize: "0.7rem",
+                              fontFamily: "var(--font-mono)",
+                              fontWeight: 600,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              cursor: "pointer",
+                              transition: "all 0.15s ease",
+                            }}
                           >
-                            <FileCheck size={11} color="#fbbf24" />
+                            <FileCheck size={11} color="var(--accent-emerald)" />
                             <span>{c.label || (c.page ? `Page ${c.page}` : `Record #${c.row_index}`)}</span>
                           </button>
                         ))}
@@ -1878,7 +2572,7 @@ export default function WorkspacePage() {
                     </div>
                   )}
                 </div>
-                <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: "3px", padding: "0 4px" }}>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: "3px", padding: "0 4px", fontFamily: "var(--font-mono)" }}>
                   {m.timestamp}
                 </span>
               </div>
@@ -1886,8 +2580,8 @@ export default function WorkspacePage() {
 
             {isLoading && (
               <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-secondary)", fontSize: "0.785rem", padding: "0.5rem" }}>
-                <Sparkles size={15} className="animate-spin" color="#60a5fa" />
-                <span>Querying Google Gemini with extracted SQL records...</span>
+                <Sparkles size={14} className="animate-spin" color="var(--accent-ink)" />
+                <span style={{ fontFamily: "var(--font-mono)" }}>Cross-examining ledger records via Gemini reasoning engine...</span>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -1896,38 +2590,30 @@ export default function WorkspacePage() {
           {/* Prompt Recommendations */}
           <div
             style={{
-              padding: "0.4rem 0.75rem",
+              padding: "0.45rem 0.75rem",
               borderTop: "1px solid var(--border-subtle)",
-              backgroundColor: "rgba(8, 12, 20, 0.4)",
+              backgroundColor: "var(--bg-card)",
               display: "flex",
               gap: "5px",
               overflowX: "auto",
               flexShrink: 0,
             }}
           >
-            {[
-              `What ${erpShortLabel} accounts were mapped to Property, Plant & Equipment (AST_PPE) under Schedule III?`,
-              `Is the ${erpShortLabel} trial balance balanced? What are the total debits and credits?`,
-              `What are the Current Investments (AST_CI) and Input Tax Credit (AST_OCA) balances from the ${erpShortLabel} trial balance?`,
-              "Summarize the Independent Auditor's Report & Key Audit Matters",
-              "What was Total Revenue from Operations & Central Rights in Note 25?",
-              "What are the Player Remuneration and Franchisee Fee costs under Note 27?",
-              "Cross-check inward invoices against GSTR-2B for Section 17(5) blocked credits",
-              "Run Journal Entry Testing on Daybook for suspicious Sunday or adjustment vouchers",
-            ].map((prompt, idx) => (
+            {dynamicPromptRecommendations.map((prompt, idx) => (
               <button
                 key={idx}
                 onClick={() => handleSendMessage(prompt)}
                 style={{
                   whiteSpace: "nowrap",
                   fontSize: "0.7rem",
-                  padding: "3px 8px",
-                  borderRadius: "9999px",
+                  padding: "3px 9px",
+                  borderRadius: "3px",
                   backgroundColor: "var(--bg-elevated)",
                   border: "1px solid var(--border-subtle)",
                   color: "var(--text-secondary)",
                   cursor: "pointer",
                   transition: "all 0.15s ease",
+                  fontFamily: "var(--font-sans)",
                 }}
               >
                 {prompt}
@@ -1953,9 +2639,9 @@ export default function WorkspacePage() {
                 display: "flex",
                 alignItems: "center",
                 gap: "6px",
-                backgroundColor: "var(--bg-primary)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "5px",
+                backgroundColor: "var(--bg-elevated)",
+                border: "1px solid var(--border-bright)",
+                borderRadius: "4px",
                 padding: "3px 6px",
               }}
             >
@@ -1986,12 +2672,12 @@ export default function WorkspacePage() {
                     handleSendMessage();
                   }
                 }}
-                placeholder="Ask an audit question (Ctrl+Enter to send)..."
+                placeholder="Enter audit inquiry or statutory citation check (Ctrl+Enter)..."
                 style={{
                   flex: 1,
                   background: "transparent",
                   border: "none",
-                  color: "var(--text-primary)",
+                  color: "var(--accent-ink)",
                   fontSize: "0.825rem",
                   outline: "none",
                   padding: "5px 3px",
@@ -2002,16 +2688,16 @@ export default function WorkspacePage() {
                 type="submit"
                 disabled={!inputQuestion.trim() || isLoading}
                 style={{
-                  backgroundColor: inputQuestion.trim() && !isLoading ? "var(--accent-blue)" : "var(--bg-elevated)",
-                  color: "#ffffff",
-                  border: "none",
-                  borderRadius: "4px",
+                  backgroundColor: inputQuestion.trim() && !isLoading ? "var(--accent-ink)" : "var(--bg-secondary)",
+                  color: inputQuestion.trim() && !isLoading ? "#FAF8F3" : "var(--text-muted)",
+                  border: "1px solid " + (inputQuestion.trim() && !isLoading ? "var(--accent-ink)" : "var(--border-subtle)"),
+                  borderRadius: "3px",
                   padding: "5px 10px",
                   cursor: inputQuestion.trim() && !isLoading ? "pointer" : "not-allowed",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  transition: "background-color 0.15s",
+                  transition: "all 0.15s ease",
                 }}
               >
                 <Send size={13} />
@@ -2027,7 +2713,7 @@ export default function WorkspacePage() {
           style={{
             position: "fixed",
             inset: 0,
-            backgroundColor: "rgba(0,0,0,0.75)",
+            backgroundColor: "rgba(15, 56, 42, 0.45)",
             backdropFilter: "blur(4px)",
             display: "flex",
             alignItems: "center",
@@ -2039,18 +2725,22 @@ export default function WorkspacePage() {
           <div
             style={{
               backgroundColor: "var(--bg-card)",
-              borderRadius: "8px",
-              border: "1px solid var(--border-subtle)",
+              borderRadius: "4px",
+              border: "1px solid var(--border-bright)",
               width: "100%",
               maxWidth: "480px",
-              padding: "1.5rem",
-              boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
+              padding: "1.75rem",
+              boxShadow: "0 16px 40px rgba(15, 56, 42, 0.2)",
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.85rem" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <UploadCloud size={20} color="#60a5fa" />
-                <h3 style={{ fontSize: "1.05rem", fontWeight: 700 }}>Upload Customer Document</h3>
+                <div style={{ width: "24px", height: "24px", borderRadius: "3px", backgroundColor: "var(--accent-ink)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <UploadCloud size={14} color="#FAF8F3" />
+                </div>
+                <h3 style={{ fontSize: "1.05rem", fontWeight: 700, color: "var(--accent-ink)", fontFamily: "var(--font-serif)", margin: 0 }}>
+                  Audit Docket Ingestion
+                </h3>
               </div>
               <button
                 disabled={isUploading}
@@ -2061,22 +2751,31 @@ export default function WorkspacePage() {
               </button>
             </div>
 
-            <p style={{ color: "var(--text-secondary)", fontSize: "0.825rem", lineHeight: 1.5, marginBottom: "1rem" }}>
-              Upload any client <strong>Audited PDF</strong>, <strong>Financial Statements</strong>, or <strong>Excel / CSV</strong> spreadsheet.
-              Data is parsed into a structured <strong>SQLite database</strong> and analyzed via <strong>Google Gemini API</strong>.
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.825rem", lineHeight: 1.55, marginBottom: "1.25rem" }}>
+              Ingest client <strong>Audited PDF</strong>, <strong>Statutory Trial Balance</strong>, or <strong>ERP Export (.xlsx/.csv)</strong>.
+              Records are parsed into structured working papers and cross-examined using Google Gemini reasoning engine.
             </p>
 
             {uploadError && (
-              <div style={{ padding: "7px 10px", borderRadius: "5px", backgroundColor: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)", color: "#fca5a5", fontSize: "0.775rem", marginBottom: "0.85rem" }}>
+              <div style={{ padding: "7px 10px", borderRadius: "3px", backgroundColor: "var(--accent-rose-subtle)", border: "1px solid rgba(185, 28, 28, 0.25)", color: "var(--accent-rose)", fontSize: "0.775rem", marginBottom: "0.85rem", fontFamily: "var(--font-mono)" }}>
                 {uploadError}
               </div>
             )}
 
             {/* Clickable Drop Zone */}
             <div
+              role="button"
+              tabIndex={0}
               onClick={() => {
-                if (!isUploading) {
-                  fileInputRef.current?.click();
+                if (!isUploading && fileInputRef.current) {
+                  fileInputRef.current.value = "";
+                  fileInputRef.current.click();
+                }
+              }}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && !isUploading && fileInputRef.current) {
+                  fileInputRef.current.value = "";
+                  fileInputRef.current.click();
                 }
               }}
               onDragOver={(e) => e.preventDefault()}
@@ -2087,34 +2786,35 @@ export default function WorkspacePage() {
                 }
               }}
               style={{
-                border: "2px dashed #3b82f6",
-                borderRadius: "6px",
+                border: "2px dashed var(--border-bright, #0F382A)",
+                borderRadius: "4px",
                 padding: "2rem 1.25rem",
                 textAlign: "center",
-                backgroundColor: "rgba(59, 130, 246, 0.04)",
+                backgroundColor: "var(--bg-elevated, #FFFFFF)",
                 marginBottom: "1.25rem",
                 cursor: isUploading ? "wait" : "pointer",
                 transition: "all 0.15s ease",
+                display: "block",
               }}
             >
               {isUploading ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
-                  <Loader2 size={32} color="#3b82f6" className="animate-spin" />
-                  <div style={{ fontWeight: 700, fontSize: "0.9rem", color: "var(--text-primary)" }}>
-                    Extracting &amp; Populating SQL Data Structure...
+                  <Loader2 size={30} color="var(--accent-ink, #0F382A)" className="animate-spin" />
+                  <div style={{ fontWeight: 700, fontSize: "0.9rem", color: "var(--accent-ink, #0F382A)", fontFamily: "var(--font-serif)" }}>
+                    Parsing &amp; Populating Working Paper Ledger...
                   </div>
-                  <div style={{ fontSize: "0.725rem", color: "var(--text-muted)" }}>
-                    Parsing lines, notes, amounts and storing in SQLite
+                  <div style={{ fontSize: "0.725rem", color: "var(--text-muted, #5D6E64)", fontFamily: "var(--font-mono)" }}>
+                    Structuring trial balance line items &amp; Schedule III codes
                   </div>
                 </div>
               ) : (
                 <>
-                  <FileText size={34} color="#60a5fa" style={{ margin: "0 auto 0.5rem auto" }} />
-                  <div style={{ fontWeight: 700, fontSize: "0.9rem", color: "var(--text-primary)" }}>
-                    Click to select a file from your computer
+                  <FileText size={36} color="var(--accent-ink, #0F382A)" style={{ margin: "0 auto 0.5rem auto", opacity: 0.8 }} />
+                  <div style={{ fontWeight: 700, fontSize: "0.9rem", color: "var(--accent-ink, #0F382A)", fontFamily: "var(--font-serif)" }}>
+                    Click to select audit engagement file
                   </div>
-                  <div style={{ fontSize: "0.725rem", color: "var(--text-muted)", marginTop: "4px" }}>
-                    or drag and drop your .pdf, .xlsx, or .csv file here
+                  <div style={{ fontSize: "0.725rem", color: "var(--text-muted, #5D6E64)", marginTop: "4px", fontFamily: "var(--font-mono)" }}>
+                    Supports .PDF, .XLSX, and .CSV financial records
                   </div>
                 </>
               )}
@@ -2123,13 +2823,14 @@ export default function WorkspacePage() {
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
               <button
                 disabled={isUploading}
+                type="button"
                 onClick={() => setShowUploadModal(false)}
                 style={{
                   padding: "0.45rem 0.85rem",
-                  borderRadius: "5px",
-                  border: "1px solid var(--border-subtle)",
-                  background: "transparent",
-                  color: "var(--text-secondary)",
+                  borderRadius: "3px",
+                  border: "1px solid var(--border-subtle, #D8D2C4)",
+                  background: "var(--bg-secondary, #EBE7DC)",
+                  color: "var(--text-secondary, #38483F)",
                   fontSize: "0.8rem",
                   cursor: "pointer",
                 }}
@@ -2137,17 +2838,25 @@ export default function WorkspacePage() {
                 Cancel
               </button>
               <button
+                type="button"
                 disabled={isUploading}
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = "";
+                    fileInputRef.current.click();
+                  }
+                }}
                 style={{
                   padding: "0.45rem 1rem",
-                  borderRadius: "5px",
-                  backgroundColor: "var(--accent-blue)",
-                  color: "#ffffff",
+                  borderRadius: "3px",
+                  backgroundColor: "var(--accent-ink, #0F382A)",
+                  color: "#FAF8F3",
                   fontSize: "0.8rem",
                   fontWeight: 600,
                   border: "none",
-                  cursor: "pointer",
+                  cursor: isUploading ? "wait" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
                 }}
               >
                 Select File

@@ -47,12 +47,15 @@ def ask_gemini_with_sql_context(
     system_prompt = (
         "You are an expert Chartered Accountant and Statutory Auditor reviewing a client's financial statements.\n"
         "You MUST answer the question using strictly the provided SQL-extracted financial records.\n"
-        "RULES FOR CITATIONS:\n"
+        "RULES FOR CITATIONS AND AMOUNTS:\n"
         "1. Every time you mention an amount, line item, statutory reference, or finding, append the citation marker '[CID: <id>]' "
-        "corresponding to the record used (e.g. 'In Note 14, unutilized ITC is INR 4,12,500 [CID: 3]').\n"
-        "2. Provide clear, professional statutory audit analysis referencing ICAI Standards on Auditing (SA 520, SA 240) "
-        "or Indian CGST Act provisions (Section 16(2)(aa), Section 17(5)) when applicable.\n"
-        "3. Keep your response direct, structured, and audit-ready."
+        "corresponding to the record used (e.g. 'In Note 29, CSR expenditure was ₹ 500.00 Crores [CID: 46633]').\n"
+        "2. IMPORTANT: Examine the Evidence Text carefully for actual financial figures, units (Crores, Lakhs), and statutory disclosures. "
+        "Always quote and report the exact figures, units, and exclusions stated in the Evidence Text (e.g., Note 29 or Note 30 on CSR expenditure).\n"
+        "3. Provide clear, professional statutory audit analysis referencing ICAI Standards on Auditing (SA 520, SA 240) "
+        "or Indian statutory provisions (Companies Act Section 135, CSR Policy Rules 2014 Rule 7(1), CGST Act Section 17(5)(fa)) when applicable.\n"
+        "4. If both Standalone and Consolidated figures are present in the evidence, clearly report both with their respective Note numbers.\n"
+        "5. Keep your response direct, structured, and audit-ready."
     )
 
     user_prompt = (
@@ -133,20 +136,30 @@ def ask_gemini_with_sql_context(
                 except Exception:
                     pass
 
+            rt = rec.get("raw_text", "").lower()
+            amt = rec.get("amount", 0.0)
             if is_gst:
-                c_label = f"GST Row #{row_num or rec['id']} • {rec['line_item'][:20]} (INR {rec['amount']:,.0f})"
+                c_label = f"GST Row #{row_num or rec['id']} • {rec['line_item'][:20]} (INR {amt:,.0f})"
                 c_type = "excel"
             elif is_gl:
-                c_label = f"GL {rec['line_item'][:26]} (INR {rec['amount']:,.0f})"
+                c_label = f"GL {rec['line_item'][:26]} (INR {amt:,.0f})"
                 c_type = "metric"
             elif is_s3:
-                c_label = f"Schedule III • {rec['line_item'][:25]} (INR {rec['amount']:,.0f})"
+                c_label = f"Schedule III • {rec['line_item'][:25]} (INR {amt:,.0f})"
                 c_type = "excel"
             elif is_excel_file or not is_pdf:
-                c_label = f"Row #{row_num or rec['id']} • {rec['line_item'][:25]} (INR {rec['amount']:,.0f})"
+                c_label = f"Row #{row_num or rec['id']} • {rec['line_item'][:25]} (INR {amt:,.0f})"
                 c_type = "excel"
             else:
-                c_label = f"Page {rec['page_number']} • {rec['line_item'][:25]} (INR {rec['amount']:,.0f})"
+                if amt > 0:
+                    if "crore" in rt:
+                        c_label = f"Page {rec['page_number']} • {rec['line_item'][:24]} (₹{amt:,.2f} Cr)"
+                    elif "lakh" in rt:
+                        c_label = f"Page {rec['page_number']} • {rec['line_item'][:24]} (₹{amt:,.2f} L)"
+                    else:
+                        c_label = f"Page {rec['page_number']} • {rec['line_item'][:24]} (₹{amt:,.0f})"
+                else:
+                    c_label = f"Page {rec['page_number']} • {rec['line_item'][:32]}"
                 c_type = "pdf"
 
             citations.append(
