@@ -43,6 +43,7 @@ from auditiq.store import session_scope
 from auditiq.store.models import TbLine, TbMapping
 from auditiq.ingest.erp.io import read_grid
 from auditiq.ingest.erp.detect import detect_source
+from auditiq.ingest.erp.registry import read_records
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = ROOT_DIR / "data" / "GST"
@@ -270,6 +271,95 @@ def extract_pdf_document_to_sql(session_id: str, file_bytes: bytes, file_name: s
     )
 
 
+def extract_prior_year_amounts_from_workbook(file_path: Path) -> Dict[str, float]:
+    """Inspects Excel workbook for comparative Prior Year columns or sheets.
+    
+    Supports:
+    1. Side-by-side comparative columns (e.g. FY23 Debit/Credit, Prior Year Net, PY Balance).
+    2. Multi-sheet workbooks with a dedicated Prior Year sheet (e.g. 'SAP_FY2023_Prior', 'FY23', 'Prior Year').
+    
+    Returns a dictionary mapping account code strings and lowercased account names to prior year float values.
+    """
+    prior_map: Dict[str, float] = {}
+    if not file_path.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
+        return prior_map
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        
+        # Strategy 1: Look for comparative columns in any sheet
+        for sname in wb.sheetnames:
+            ws = wb[sname]
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                continue
+            
+            header_idx = -1
+            for i, r in enumerate(rows[:12]):
+                row_str = " ".join(str(c or "").lower() for c in r)
+                if any(k in row_str for k in ["g/l account", "particulars", "account code", "gl account", "ledger"]):
+                    header_idx = i
+                    break
+            
+            if header_idx != -1:
+                header = [str(c or "").lower().strip() for c in rows[header_idx]]
+                code_col = next((ci for ci, c in enumerate(header) if any(k in c for k in ["g/l account", "gl account", "account code", "account no", "code"])), 0)
+                name_col = next((ci for ci, c in enumerate(header) if any(k in c for k in ["long text", "name", "description", "title", "particulars"])), 1)
+                
+                py_debit_col = next((ci for ci, c in enumerate(header) if ("debit" in c or "dr" in c) and any(y in c for y in ["py", "prior", "prev", "fy23", "2023", "last"])), None)
+                py_credit_col = next((ci for ci, c in enumerate(header) if ("credit" in c or "cr" in c) and any(y in c for y in ["py", "prior", "prev", "fy23", "2023", "last"])), None)
+                py_net_col = next((ci for ci, c in enumerate(header) if any(y in c for y in ["py", "prior", "prev", "fy23", "2023", "last"]) and ("net" in c or "balance" in c or "amount" in c or "total" in c)), None)
+                
+                if py_debit_col is not None or py_net_col is not None:
+                    for r in rows[header_idx+1:]:
+                        code = str(r[code_col] or "").strip()
+                        name = str(r[name_col] or "").strip().lower() if name_col < len(r) else ""
+                        if not code or "total" in code.lower():
+                            continue
+                        amt = 0.0
+                        if py_net_col is not None and r[py_net_col] is not None:
+                            try:
+                                amt = abs(float(str(r[py_net_col]).replace(",", "")))
+                            except Exception:
+                                pass
+                        elif py_debit_col is not None:
+                            try:
+                                dr = float(str(r[py_debit_col] or 0).replace(",", "") or 0)
+                                cr = float(str(r[py_credit_col] or 0).replace(",", "") or 0) if py_credit_col is not None else 0.0
+                                amt = abs(dr - cr)
+                            except Exception:
+                                pass
+                        prior_map[code] = amt
+                        if name:
+                            prior_map[name] = amt
+                    if prior_map:
+                        return prior_map
+        
+        # Strategy 2: Look for a separate Prior Year sheet
+        py_keywords = ["prior", "py", "prev", "last", "fy23", "2023", "previous"]
+        for sname in wb.sheetnames:
+            low_s = sname.lower()
+            if any(k in low_s for k in py_keywords) and not any(k in low_s for k in ["current", "cy", "fy24", "2024"]):
+                ws = wb[sname]
+                sheet_rows = [list(r) for r in ws.iter_rows(values_only=True)]
+                source = detect_source(sheet_rows)
+                records = read_records(sheet_rows, source)
+                for rec in records:
+                    code_k = str(rec.raw_code or "").strip()
+                    name_k = str(rec.raw_name or "").strip().lower()
+                    if code_k:
+                        prior_map[code_k] = abs(float(rec.amount))
+                    if name_k:
+                        prior_map[name_k] = abs(float(rec.amount))
+                if prior_map:
+                    return prior_map
+    except Exception as e:
+        logger.warning(f"Failed extracting comparative prior year amounts: {e}")
+
+    return prior_map
+
+
 def extract_spreadsheet_document_to_sql(session_id: str, file_bytes: bytes, file_name: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Parse spreadsheet document. Auto-detects ERP Trial Balance vs Invoice Register.
     
@@ -306,6 +396,10 @@ def extract_spreadsheet_document_to_sql(session_id: str, file_bytes: bytes, file
             map_res = map_engagement(tb_res.engagement_id)
             taxonomy = load_default_taxonomy()
 
+            # Check for comparative 2-year prior amounts in workbook
+            prior_map = extract_prior_year_amounts_from_workbook(temp_file)
+            has_comparative = bool(prior_map)
+
             rows: List[Dict[str, Any]] = []
             with session_scope() as db_session:
                 mappings = (
@@ -323,11 +417,28 @@ def extract_spreadsheet_document_to_sql(session_id: str, file_bytes: bytes, file
 
                     src_tag = tb_res.source.upper()
                     acct_prefix = "Tally" if tb_res.source.lower() == "tally" else "Zoho" if tb_res.source.lower() == "zoho" else "SAP" if tb_res.source.lower() == "sap" else "ERP"
-                    acct_identifier = l.raw_code or str(idx + 1)
+                    acct_identifier = str(l.raw_code or (idx + 1)).strip()
+                    clean_name = str(l.raw_name or "").strip().lower()
+
+                    # Retrieve Prior Year comparative figure
+                    prior_val = None
+                    if acct_identifier in prior_map:
+                        prior_val = prior_map[acct_identifier]
+                    elif clean_name in prior_map:
+                        prior_val = prior_map[clean_name]
+
+                    if prior_val is None:
+                        # If comparative data was present in the workbook but this account is absent in PY -> NEW_HEAD (prior = 0)
+                        # If the file had NO comparative data at all -> default to amt (no phantom anomaly)
+                        prior_val = 0.0 if has_comparative else amt
+
+                    variance = amt - prior_val
+                    pct_str = f"{((variance / prior_val) * 100.0):+.1f}%" if prior_val > 0 else ("+100%" if amt > 0 else "0.0%")
+                    comp_text = f" | Prior Year (PY): INR {prior_val:,.2f} | YoY Variance: INR {variance:+,.2f} ({pct_str})" if has_comparative else ""
 
                     raw_repr = (
                         f"{acct_prefix} Account: {l.raw_name} (Code: {acct_identifier}) | "
-                        f"Amount: INR {amt:,.2f} ({l.side}) | "
+                        f"Amount: INR {amt:,.2f} ({l.side}){comp_text} | "
                         f"Schedule III Classification: {code_disp} ({fsli_name}) | "
                         f"Method: {m.method} | Confidence: {m.confidence:.2f} | "
                         f"Source ERP: {src_tag} | Balanced TB: {tb_res.balanced}"
@@ -341,7 +452,7 @@ def extract_spreadsheet_document_to_sql(session_id: str, file_bytes: bytes, file
                         section=f"Schedule III • {code_disp}",
                         line_item=f"{acct_prefix} #{acct_identifier}: {l.raw_name} -> {code_disp}",
                         amount=amt,
-                        prior_amount=float(l.amount),
+                        prior_amount=float(prior_val),
                         raw_text=raw_repr,
                         category="schedule3_mapping",
                     )
@@ -373,6 +484,8 @@ def extract_spreadsheet_document_to_sql(session_id: str, file_bytes: bytes, file
                 "resolved": map_res.resolved,
                 "review": map_res.review,
                 "resolution_rate": map_res.resolution_rate,
+                "is_comparative": has_comparative,
+                "comparative_count": len(prior_map),
             }
             return rows, tb_meta
         except Exception as err:

@@ -22,6 +22,13 @@ import {
   Layers,
   FolderUp,
   Search,
+  TrendingDown,
+  TrendingUp,
+  AlertOctagon,
+  ArrowUpRight,
+  ArrowDownRight,
+  Activity,
+  SlidersHorizontal,
 } from "lucide-react";
 
 interface RowData {
@@ -52,6 +59,35 @@ interface SqlFinancialRecord {
   prior_amount: number;
   raw_text: string;
   category: string;
+}
+
+interface AnomalyFindingItem {
+  id: number;
+  page_number: number;
+  block_id: string;
+  section: string;
+  line_item: string;
+  cy_amount: number;
+  py_amount: number;
+  variance: number;
+  pct_change: number;
+  anomaly_type: "CRITICAL_DROP" | "CRITICAL_SPIKE" | "MATERIAL_SWING" | "WATCH_SWING" | "VANISHED_HEAD" | "NEW_HEAD";
+  severity: "CRITICAL" | "WARNING" | "WATCH";
+  audit_risk: string;
+  suggested_inquiry: string;
+}
+
+interface AnomalySummaryData {
+  total_comparative_items: number;
+  critical_count: number;
+  warning_count: number;
+  watch_count: number;
+  total_drop_count: number;
+  total_spike_count: number;
+  max_drop_pct: number;
+  max_drop_item: string;
+  max_spike_pct: number;
+  max_spike_item: string;
 }
 
 interface PdfBlock {
@@ -104,7 +140,7 @@ function generateCurrentTime(): string {
 }
 
 export default function WorkspacePage() {
-  const [activeTab, setActiveTab] = useState<"pdf" | "sql" | "books" | "schedule3">("pdf");
+  const [activeTab, setActiveTab] = useState<"pdf" | "sql" | "books" | "schedule3" | "anomalies">("pdf");
   const [sessionId, setSessionId] = useState<string>("demo-gst-fy23-24");
   const [activeFileName, setActiveFileName] = useState<string>("INVESTOR_CORNER_1756730556104_570e54_1756730556104.pdf");
 
@@ -145,6 +181,158 @@ export default function WorkspacePage() {
     if (singleSide >= 100000) return `INR ${(singleSide / 100000).toFixed(2)}L`;
     return `INR ${singleSide.toLocaleString("en-IN")}`;
   }, [s3Records]);
+
+  // ICAI SA 520 / SA 240 Year-on-Year Anomaly Detection Engine
+  // ICAI SA 320 / SA 520 Auditor Materiality Benchmark Configuration
+  const [materialityPct, setMaterialityPct] = useState<number>(30); // Default standard 30%
+  const [minMaterialAmount, setMinMaterialAmount] = useState<number>(50); // Default INR 50 threshold floor
+  const [anomalySearch, setAnomalySearch] = useState<string>("");
+  const [anomalyFilter, setAnomalyFilter] = useState<"ALL" | "CRITICAL" | "DROPS" | "SPIKES">("ALL");
+
+  const anomaliesReport = useMemo(() => {
+    const findings: AnomalyFindingItem[] = [];
+    let totalComparative = 0;
+    let totalDrops = 0;
+    let totalSpikes = 0;
+    let maxDropPct = 0;
+    let maxDropItem = "";
+    let maxSpikePct = 0;
+    let maxSpikeItem = "";
+
+    const watchSwingPct = Math.max(5, Math.round(materialityPct * 0.5));
+    const criticalDropThreshold = Math.max(75, materialityPct * 1.5);
+    const criticalSpikeThreshold = Math.max(125, materialityPct * 2.0);
+
+    for (const r of sqlRecords) {
+      const cy = Number(r.amount) || 0;
+      const py = Number(r.prior_amount) || 0;
+      const lineItem = r.line_item || "";
+
+      if (cy === 0 && py === 0) continue;
+      if (Math.abs(cy - py) < 0.0001) continue;
+
+      const minV = Math.min(Math.abs(cy), Math.abs(py));
+      const maxV = Math.max(Math.abs(cy), Math.abs(py));
+      if (minV > 0 && maxV / minV > 5000 && minV < 100) continue;
+      if (Math.max(Math.abs(cy), Math.abs(py)) < minMaterialAmount) continue;
+
+      totalComparative++;
+      const variance = cy - py;
+      const absVar = Math.abs(variance);
+      let pct = 0;
+      if (py > 0) {
+        pct = (variance / py) * 100;
+      } else if (py === 0 && cy > 0) {
+        pct = 100;
+      } else if (py < 0) {
+        pct = (variance / Math.abs(py)) * 100;
+      } else {
+        pct = -100;
+      }
+
+      if (pct < maxDropPct) {
+        maxDropPct = pct;
+        maxDropItem = lineItem.slice(0, 35);
+      }
+      if (pct > maxSpikePct && pct < 5000) {
+        maxSpikePct = pct;
+        maxSpikeItem = lineItem.slice(0, 35);
+      }
+
+      let anomType: AnomalyFindingItem["anomaly_type"] = "WATCH_SWING";
+      let sev: AnomalyFindingItem["severity"] = "WATCH";
+      let risk = "";
+
+      if (py > minMaterialAmount && cy < py * (1 - (criticalDropThreshold / 100))) {
+        anomType = "CRITICAL_DROP";
+        sev = "CRITICAL";
+        risk = `Severe expense/asset drop of ${Math.abs(pct).toFixed(1)}% (INR ${absVar.toLocaleString("en-IN", { minimumFractionDigits: 2 })} drop). Audit Risk under SA 240 / SA 520: Potential suppression of expenses, unrecorded liabilities, or cut-off timing errors exceeding critical audit threshold (${criticalDropThreshold.toFixed(0)}%).`;
+        totalDrops++;
+      } else if (py > minMaterialAmount && cy > py * (1 + (criticalSpikeThreshold / 100))) {
+        anomType = "CRITICAL_SPIKE";
+        sev = "CRITICAL";
+        risk = `Extraordinary surge of ${pct > 0 ? "+" : ""}${pct.toFixed(1)}% (INR ${absVar.toLocaleString("en-IN", { minimumFractionDigits: 2 })} increase). Audit Risk under SA 500 / SA 240: Potential misclassification of capital expenditure, unbudgeted commitments, or fictitious vouchers exceeding critical threshold (+${criticalSpikeThreshold.toFixed(0)}%).`;
+        totalSpikes++;
+      } else if (py > 0 && cy === 0) {
+        anomType = "VANISHED_HEAD";
+        sev = "WARNING";
+        risk = `Account head completely ceased (Prior: INR ${py.toLocaleString("en-IN", { minimumFractionDigits: 2 })} -> Current: INR 0). Audit Risk: Potential complete omission or hidden reclassification under general overheads.`;
+        totalDrops++;
+      } else if (py === 0 && cy > minMaterialAmount) {
+        anomType = "NEW_HEAD";
+        sev = "WARNING";
+        risk = `Newly created account head (Current: INR ${cy.toLocaleString("en-IN", { minimumFractionDigits: 2 })} vs Prior: INR 0). Audit Risk: Unbudgeted expense stream requiring board authorization.`;
+        totalSpikes++;
+      } else if (Math.abs(pct) >= materialityPct && absVar >= minMaterialAmount) {
+        anomType = "MATERIAL_SWING";
+        sev = absVar > 250000 ? "CRITICAL" : "WARNING";
+        risk = `Material fluctuation of ${pct > 0 ? "+" : ""}${pct.toFixed(1)}% (INR ${absVar.toLocaleString("en-IN", { minimumFractionDigits: 2 })} variance). Audit Risk under SA 320 / SA 520: Line item exceeds auditor-set materiality tolerance (+/- ${materialityPct}%). Detailed substantive testing of ledger vouchers required.`;
+        if (pct < 0) totalDrops++; else totalSpikes++;
+      } else if (Math.abs(pct) >= watchSwingPct && absVar >= (minMaterialAmount / 2)) {
+        anomType = "WATCH_SWING";
+        sev = "WATCH";
+        risk = `Monitored variance of ${pct > 0 ? "+" : ""}${pct.toFixed(1)}% (INR ${absVar.toLocaleString("en-IN", { minimumFractionDigits: 2 })}). Analytical procedures indicate deviation within secondary watch band (${watchSwingPct}% - ${materialityPct}%).`;
+        if (pct < 0) totalDrops++; else totalSpikes++;
+      } else {
+        continue;
+      }
+
+      const inquiryPrompt = `As Statutory Auditor under ICAI SA 320 / SA 520 (Materiality threshold: ${materialityPct}%), investigate the significant anomaly in "${lineItem}": Current Year is INR ${cy.toLocaleString("en-IN", { minimumFractionDigits: 2 })} versus Prior Year INR ${py.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (Variance: ${variance > 0 ? "+" : ""}${variance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}, Swing: ${pct > 0 ? "+" : ""}${pct.toFixed(1)}%). Examine whether this exceeds the ${materialityPct}% materiality benchmark, evaluate business justification, and identify statutory audit risks under SA 240.`;
+
+      findings.push({
+        id: r.id,
+        page_number: r.page_number,
+        block_id: r.block_id,
+        section: r.section || "Financial Statements",
+        line_item: lineItem,
+        cy_amount: cy,
+        py_amount: py,
+        variance,
+        pct_change: pct,
+        anomaly_type: anomType,
+        severity: sev,
+        audit_risk: risk,
+        suggested_inquiry: inquiryPrompt,
+      });
+    }
+
+    const sevRank = { CRITICAL: 0, WARNING: 1, WATCH: 2 };
+    findings.sort((a, b) => (sevRank[a.severity] - sevRank[b.severity]) || (Math.abs(b.variance) - Math.abs(a.variance)));
+
+    const summary: AnomalySummaryData = {
+      total_comparative_items: totalComparative,
+      critical_count: findings.filter((f) => f.severity === "CRITICAL").length,
+      warning_count: findings.filter((f) => f.severity === "WARNING").length,
+      watch_count: findings.filter((f) => f.severity === "WATCH").length,
+      total_drop_count: totalDrops,
+      total_spike_count: totalSpikes,
+      max_drop_pct: maxDropPct,
+      max_drop_item: maxDropItem || "None",
+      max_spike_pct: maxSpikePct,
+      max_spike_item: maxSpikeItem || "None",
+    };
+
+    return { summary, findings };
+  }, [sqlRecords, materialityPct, minMaterialAmount]);
+
+  const filteredAnomalies = useMemo(() => {
+    let list = anomaliesReport.findings;
+    if (anomalyFilter === "CRITICAL") {
+      list = list.filter((f) => f.severity === "CRITICAL");
+    } else if (anomalyFilter === "DROPS") {
+      list = list.filter((f) => f.pct_change < 0);
+    } else if (anomalyFilter === "SPIKES") {
+      list = list.filter((f) => f.pct_change > 0);
+    }
+    if (!anomalySearch.trim()) return list;
+    const term = anomalySearch.toLowerCase();
+    return list.filter(
+      (f) =>
+        f.line_item.toLowerCase().includes(term) ||
+        f.section.toLowerCase().includes(term) ||
+        f.audit_risk.toLowerCase().includes(term)
+    );
+  }, [anomaliesReport.findings, anomalyFilter, anomalySearch]);
 
   // Real Extracted PDF state
   const [extractedPdf, setExtractedPdf] = useState<ExtractedPdfDoc | null>(null);
@@ -520,6 +708,11 @@ export default function WorkspacePage() {
         element.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 100);
+  };
+
+  // Investigate anomaly with Copilot
+  const investigateAnomaly = (item: AnomalyFindingItem) => {
+    setInputQuestion(item.suggested_inquiry);
   };
 
   // Jump to Schedule III record row
@@ -918,6 +1111,7 @@ export default function WorkspacePage() {
         "What were the Key Audit Matters (KAM) reported by statutory auditor S R B C & CO LLP?",
         "What were the segment revenues for FMCG - Cigarettes, FMCG - Others, and Agri Business under Note 30?",
         "What are the disputed claims for Excise duty, VAT/Sales tax, and GST under Contingent Liabilities?",
+        "⚡ What are the major Year-on-Year anomalies under SA 520?",
         "What was the total Corporate Social Responsibility (CSR) expenditure during the year?",
         "What was the inter-segment revenue elimination in Note 30?",
         "What are the statutory disclosures regarding the Scheme of Demerger of the Hotels Business?",
@@ -1356,6 +1550,40 @@ export default function WorkspacePage() {
                   </span>
                 </button>
               )}
+
+              {/* Tab 5: ICAI SA 520 Anomalies */}
+              <button
+                onClick={() => setActiveTab("anomalies")}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "6px 12px",
+                  borderRadius: "3px 3px 0 0",
+                  fontSize: "0.75rem",
+                  fontWeight: effectiveActiveTab === "anomalies" ? 700 : 500,
+                  cursor: "pointer",
+                  border: effectiveActiveTab === "anomalies" ? "1px solid var(--border-subtle)" : "1px solid transparent",
+                  borderTop: effectiveActiveTab === "anomalies" ? "2px solid #D97706" : "2px solid transparent",
+                  borderBottom: effectiveActiveTab === "anomalies" ? "1px solid var(--bg-card)" : "1px solid transparent",
+                  whiteSpace: "nowrap",
+                  backgroundColor: effectiveActiveTab === "anomalies" ? "var(--bg-card)" : "transparent",
+                  color: effectiveActiveTab === "anomalies" ? "#B45309" : "var(--text-muted)",
+                  marginBottom: effectiveActiveTab === "anomalies" ? "-1px" : "0",
+                }}
+              >
+                <Activity size={12} color={effectiveActiveTab === "anomalies" ? "#D97706" : "var(--text-muted)"} />
+                <span>⚡ SA 520 Anomalies</span>
+                {anomaliesReport.summary.critical_count > 0 ? (
+                  <span style={{ fontSize: "0.65rem", padding: "1px 6px", borderRadius: "10px", backgroundColor: "rgba(220, 38, 38, 0.15)", color: "#DC2626", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+                    {anomaliesReport.summary.critical_count} Critical
+                  </span>
+                ) : (
+                  <span style={{ fontSize: "0.65rem", padding: "1px 5px", borderRadius: "2px", backgroundColor: "var(--bg-secondary)", fontFamily: "var(--font-mono)" }}>
+                    {anomaliesReport.findings.length}
+                  </span>
+                )}
+              </button>
             </div>
 
             {/* Sub-toolbar controls per tab */}
@@ -2395,6 +2623,460 @@ export default function WorkspacePage() {
               </div>
             </div>
           )}
+
+          {/* View 5: ICAI SA 520 & SA 240 Horizontal Anomaly & Variance View */}
+          {effectiveActiveTab === "anomalies" && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "auto", backgroundColor: "var(--bg-elevated)" }}>
+              {/* Executive Anomaly Dashboard Banner */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  backgroundColor: "var(--bg-card)",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <AlertOctagon size={13} color="#DC2626" />
+                    <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                      Critical Anomalies
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "1.05rem", fontWeight: 800, color: "#DC2626", marginTop: "3px", fontFamily: "var(--font-mono)" }}>
+                    {anomaliesReport.summary.critical_count} Flagged
+                  </div>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>
+                    Drops &gt; {Math.max(75, materialityPct * 1.5).toFixed(0)}% or Spikes &gt; {Math.max(125, materialityPct * 2.0).toFixed(0)}%
+                  </span>
+                </div>
+
+                <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <Activity size={13} color="#D97706" />
+                    <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                      Watchlist Swings
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "1.05rem", fontWeight: 800, color: "#D97706", marginTop: "3px", fontFamily: "var(--font-mono)" }}>
+                    {anomaliesReport.summary.warning_count + anomaliesReport.summary.watch_count} Monitored
+                  </div>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>
+                    Tolerance band ({Math.max(5, Math.round(materialityPct * 0.5))}% - {materialityPct}%)
+                  </span>
+                </div>
+
+                <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border-muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <TrendingDown size={13} color="#DC2626" />
+                    <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                      Severe Drop (SA 240)
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "1.05rem", fontWeight: 800, color: "#DC2626", marginTop: "3px", fontFamily: "var(--font-mono)" }}>
+                    {anomaliesReport.summary.max_drop_pct.toFixed(1)}% ▼
+                  </div>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", display: "inline-block", whiteSpace: "nowrap" }} title={anomaliesReport.summary.max_drop_item}>
+                    {anomaliesReport.summary.max_drop_item}
+                  </span>
+                </div>
+
+                <div style={{ padding: "10px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <TrendingUp size={13} color="#2563EB" />
+                    <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}>
+                      Surge / Spike (SA 500)
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "1.05rem", fontWeight: 800, color: "#2563EB", marginTop: "3px", fontFamily: "var(--font-mono)" }}>
+                    +{anomaliesReport.summary.max_spike_pct.toFixed(1)}% ▲
+                  </div>
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", display: "inline-block", whiteSpace: "nowrap" }} title={anomaliesReport.summary.max_spike_item}>
+                    {anomaliesReport.summary.max_spike_item}
+                  </span>
+                </div>
+              </div>
+
+              {/* ICAI SA 320 Materiality Benchmark Configuration Bar */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 14px",
+                  backgroundColor: "var(--bg-card)",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <span
+                    style={{
+                      fontSize: "0.65rem",
+                      fontWeight: 800,
+                      color: "var(--accent-ink)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "5px",
+                    }}
+                  >
+                    <SlidersHorizontal size={13} color="var(--accent-ink)" />
+                    ICAI SA 320 Materiality:
+                  </span>
+
+                  {/* Benchmark Presets */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                    {[
+                      { label: "10% Strict", val: 10 },
+                      { label: "15% Conservative", val: 15 },
+                      { label: "25% Moderate", val: 25 },
+                      { label: "30% Standard", val: 30 },
+                      { label: "50% High", val: 50 },
+                    ].map((preset) => (
+                      <button
+                        key={preset.val}
+                        onClick={() => setMaterialityPct(preset.val)}
+                        style={{
+                          padding: "2px 8px",
+                          fontSize: "0.68rem",
+                          fontWeight: materialityPct === preset.val ? 700 : 500,
+                          borderRadius: "3px",
+                          border: materialityPct === preset.val ? "1px solid var(--accent-ink)" : "1px solid var(--border-subtle)",
+                          backgroundColor: materialityPct === preset.val ? "var(--accent-ink)" : "var(--bg-elevated)",
+                          color: materialityPct === preset.val ? "#FAF8F3" : "var(--text-secondary)",
+                          cursor: "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom Materiality Slider & Inputs */}
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Threshold:</span>
+                    <input
+                      type="range"
+                      min={5}
+                      max={100}
+                      step={5}
+                      value={materialityPct}
+                      onChange={(e) => setMaterialityPct(Number(e.target.value))}
+                      style={{ width: "80px", cursor: "pointer", accentColor: "var(--accent-ink)" }}
+                      title={`Auditor Materiality: ${materialityPct}%`}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
+                      <input
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={materialityPct}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (v >= 1) setMaterialityPct(v);
+                        }}
+                        style={{
+                          width: "46px",
+                          padding: "2px 4px",
+                          fontSize: "0.72rem",
+                          fontWeight: 700,
+                          fontFamily: "var(--font-mono)",
+                          textAlign: "center",
+                          borderRadius: "3px",
+                          border: "1px solid var(--border-subtle)",
+                          backgroundColor: "var(--bg-elevated)",
+                          color: "var(--text-primary)",
+                        }}
+                      />
+                      <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "var(--text-muted)" }}>%</span>
+                    </div>
+                  </div>
+
+                  <div style={{ height: "16px", width: "1px", backgroundColor: "var(--border-muted)" }} />
+
+                  {/* Minimum Material Amount Floor */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                    <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>Floor: ₹</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={50}
+                      value={minMaterialAmount}
+                      onChange={(e) => setMinMaterialAmount(Math.max(0, Number(e.target.value)))}
+                      style={{
+                        width: "60px",
+                        padding: "2px 4px",
+                        fontSize: "0.72rem",
+                        fontWeight: 700,
+                        fontFamily: "var(--font-mono)",
+                        textAlign: "right",
+                        borderRadius: "3px",
+                        border: "1px solid var(--border-subtle)",
+                        backgroundColor: "var(--bg-elevated)",
+                        color: "var(--text-primary)",
+                      }}
+                      title="Minimum rupee floor to eliminate petty cash clutter"
+                    />
+                  </div>
+
+                  {/* Active Policy Status Pill */}
+                  <span
+                    style={{
+                      fontSize: "0.62rem",
+                      fontWeight: 700,
+                      padding: "2px 6px",
+                      borderRadius: "3px",
+                      backgroundColor: "rgba(180, 83, 9, 0.08)",
+                      border: "1px solid rgba(180, 83, 9, 0.2)",
+                      color: "#B45309",
+                      fontFamily: "var(--font-mono)",
+                    }}
+                  >
+                    Benchmark: ±{materialityPct}% | Floor: ₹{minMaterialAmount.toLocaleString("en-IN")}
+                  </span>
+                </div>
+              </div>
+
+              {/* Anomaly Filter Bar */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 14px",
+                  backgroundColor: "var(--bg-secondary)",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  gap: "10px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <button
+                    onClick={() => setAnomalyFilter("ALL")}
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: "3px",
+                      fontSize: "0.7rem",
+                      fontWeight: anomalyFilter === "ALL" ? 700 : 500,
+                      cursor: "pointer",
+                      border: "1px solid var(--border-subtle)",
+                      backgroundColor: anomalyFilter === "ALL" ? "var(--accent-ink)" : "var(--bg-card)",
+                      color: anomalyFilter === "ALL" ? "#FAF8F3" : "var(--text-primary)",
+                    }}
+                  >
+                    All Findings ({anomaliesReport.findings.length})
+                  </button>
+                  <button
+                    onClick={() => setAnomalyFilter("CRITICAL")}
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: "3px",
+                      fontSize: "0.7rem",
+                      fontWeight: anomalyFilter === "CRITICAL" ? 700 : 500,
+                      cursor: "pointer",
+                      border: "1px solid rgba(220, 38, 38, 0.3)",
+                      backgroundColor: anomalyFilter === "CRITICAL" ? "#DC2626" : "rgba(220, 38, 38, 0.08)",
+                      color: anomalyFilter === "CRITICAL" ? "#FFF" : "#DC2626",
+                    }}
+                  >
+                    Critical Drops &amp; Spikes ({anomaliesReport.summary.critical_count})
+                  </button>
+                  <button
+                    onClick={() => setAnomalyFilter("DROPS")}
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: "3px",
+                      fontSize: "0.7rem",
+                      fontWeight: anomalyFilter === "DROPS" ? 700 : 500,
+                      cursor: "pointer",
+                      border: "1px solid var(--border-subtle)",
+                      backgroundColor: anomalyFilter === "DROPS" ? "var(--accent-ink)" : "var(--bg-card)",
+                      color: anomalyFilter === "DROPS" ? "#FAF8F3" : "var(--text-primary)",
+                    }}
+                  >
+                    Drops Only ▼ ({anomaliesReport.summary.total_drop_count})
+                  </button>
+                  <button
+                    onClick={() => setAnomalyFilter("SPIKES")}
+                    style={{
+                      padding: "3px 10px",
+                      borderRadius: "3px",
+                      fontSize: "0.7rem",
+                      fontWeight: anomalyFilter === "SPIKES" ? 700 : 500,
+                      cursor: "pointer",
+                      border: "1px solid var(--border-subtle)",
+                      backgroundColor: anomalyFilter === "SPIKES" ? "var(--accent-ink)" : "var(--bg-card)",
+                      color: anomalyFilter === "SPIKES" ? "#FAF8F3" : "var(--text-primary)",
+                    }}
+                  >
+                    Spikes Only ▲ ({anomaliesReport.summary.total_spike_count})
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <Search size={12} color="var(--text-muted)" />
+                  <input
+                    type="text"
+                    value={anomalySearch}
+                    onChange={(e) => setAnomalySearch(e.target.value)}
+                    placeholder="Search accounts or risks..."
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: "0.725rem",
+                      borderRadius: "3px",
+                      border: "1px solid var(--border-subtle)",
+                      backgroundColor: "var(--bg-card)",
+                      color: "var(--text-primary)",
+                      width: "190px",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Anomaly Forensic Data Table */}
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.785rem" }}>
+                  <thead>
+                    <tr style={{ backgroundColor: "var(--bg-secondary)", color: "var(--accent-ink)", position: "sticky", top: 0, zIndex: 10, textAlign: "left", borderBottom: "2px solid var(--border-bright)" }}>
+                      <th style={{ padding: "8px 10px", width: "55px", fontFamily: "var(--font-mono)", fontSize: "0.7rem" }}>Ref</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem", width: "220px" }}>Line Item / Account Head</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem", width: "150px" }}>Section / Note</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem", width: "110px" }}>Prior Year (PY)</th>
+                      <th style={{ padding: "8px 10px", textAlign: "right", fontSize: "0.7rem", width: "110px" }}>Current Year (CY)</th>
+                      <th style={{ padding: "8px 10px", textAlign: "center", fontSize: "0.7rem", width: "140px" }}>YoY Variance &amp; Swing</th>
+                      <th style={{ padding: "8px 10px", fontSize: "0.7rem" }}>ICAI Statutory Risk Assessment (SA 520 / SA 240)</th>
+                      <th style={{ padding: "8px 10px", textAlign: "center", fontSize: "0.7rem", width: "95px" }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAnomalies.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} style={{ padding: "2.5rem", textAlign: "center", color: "var(--text-muted)" }}>
+                          No anomalies match the selected filters.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAnomalies.map((a, idx) => {
+                        const isDrop = a.variance < 0;
+                        const isCritical = a.severity === "CRITICAL";
+
+                        return (
+                          <tr
+                            key={a.id}
+                            style={{
+                              borderBottom: "1px solid var(--border-muted)",
+                              backgroundColor: isCritical
+                                ? "rgba(220, 38, 38, 0.03)"
+                                : idx % 2 === 0
+                                ? "var(--bg-elevated)"
+                                : "var(--bg-card)",
+                              transition: "background-color 0.15s",
+                            }}
+                          >
+                            <td style={{ padding: "8px 10px", color: "var(--accent-ink)", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+                              {a.page_number > 0 ? (
+                                <button
+                                  onClick={() => jumpToPdfBlock(a.page_number, a.block_id, a.line_item, a.line_item)}
+                                  style={{
+                                    border: "none",
+                                    backgroundColor: "transparent",
+                                    color: "var(--accent-ink)",
+                                    cursor: "pointer",
+                                    fontWeight: 700,
+                                    textDecoration: "underline",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: "0.725rem",
+                                    padding: 0,
+                                  }}
+                                  title={`Click to jump to PDF Page ${a.page_number}`}
+                                >
+                                  P.{a.page_number}
+                                </button>
+                              ) : (
+                                `#${a.id}`
+                              )}
+                            </td>
+                            <td style={{ padding: "8px 10px", fontWeight: 600, color: "var(--text-primary)" }}>
+                              {a.line_item}
+                            </td>
+                            <td style={{ padding: "8px 10px", color: "var(--text-secondary)", fontSize: "0.725rem" }}>
+                              {a.section}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }} className="tabular-nums">
+                              {a.py_amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: "var(--text-primary)" }} className="tabular-nums">
+                              {a.cy_amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "3px",
+                                  padding: "2px 7px",
+                                  borderRadius: "3px",
+                                  fontSize: "0.7rem",
+                                  fontWeight: 700,
+                                  fontFamily: "var(--font-mono)",
+                                  backgroundColor: isDrop
+                                    ? "rgba(220, 38, 38, 0.12)"
+                                    : "rgba(37, 99, 235, 0.12)",
+                                  border: isDrop
+                                    ? "1px solid rgba(220, 38, 38, 0.3)"
+                                    : "1px solid rgba(37, 99, 235, 0.3)",
+                                  color: isDrop ? "#DC2626" : "#2563EB",
+                                }}
+                              >
+                                {isDrop ? <TrendingDown size={11} /> : <TrendingUp size={11} />}
+                                {a.pct_change > 0 ? "+" : ""}{a.pct_change.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td style={{ padding: "8px 10px", color: "var(--text-secondary)", fontSize: "0.725rem", lineHeight: 1.35 }}>
+                              <span style={{ fontWeight: 600, color: isCritical ? "#DC2626" : "#D97706", marginRight: "4px" }}>
+                                [{a.anomaly_type}]
+                              </span>
+                              {a.audit_risk}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                              <button
+                                onClick={() => investigateAnomaly(a)}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  padding: "3px 8px",
+                                  borderRadius: "3px",
+                                  backgroundColor: "var(--accent-ink)",
+                                  color: "#FAF8F3",
+                                  fontSize: "0.685rem",
+                                  fontWeight: 600,
+                                  border: "none",
+                                  cursor: "pointer",
+                                  whiteSpace: "nowrap",
+                                }}
+                                title="Load pre-crafted ICAI SA 520 inquiry into Copilot"
+                              >
+                                <Sparkles size={10} />
+                                <span>Investigate</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
         </div>
 
         {/* ========================================================================= */}
